@@ -1,0 +1,179 @@
+// This is your Prisma schema file.
+// Proyecto: sales-control
+// Base de datos: MySQL
+// ORM: Prisma 7
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+}
+
+/**
+ * Roles del sistema.
+ *
+ * ADMIN:
+ * Puede administrar productos, usuarios y revisar todo.
+ *
+ * SELLER:
+ * Puede registrar clientes y pedidos.
+ */
+enum UserRole {
+  ADMIN
+  SELLER
+}
+
+/**
+ * Estados de un pedido.
+ *
+ * PENDING:
+ * Pedido registrado, pero aún no pagado o finalizado.
+ *
+ * PAID:
+ * Pedido pagado.
+ *
+ * DELIVERED:
+ * Pedido entregado.
+ *
+ * CANCELLED:
+ * Pedido cancelado.
+ */
+enum OrderStatus {
+  PENDING
+  PAID
+  DELIVERED
+  CANCELLED
+}
+
+/**
+ * Usuario del sistema.
+ *
+ * Puede ser administrador o vendedor.
+ * Un vendedor puede registrar muchos pedidos.
+ */
+model User {
+  id       Int      @id @default(autoincrement())
+  name     String
+  email    String   @unique
+  password String
+  role     UserRole @default(SELLER)
+
+  // Relación: un usuario/vendedor puede tener muchos pedidos.
+  orders Order[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("users")
+}
+
+/**
+ * Producto disponible para vender.
+ *
+ * No se elimina físicamente.
+ * Se desactiva con isActive para conservar historial.
+ */
+model Product {
+  id          Int     @id @default(autoincrement())
+  name        String
+  description String?
+  price       Decimal @db.Decimal(10, 2)
+  stock       Int     @default(0)
+  isActive    Boolean @default(true)
+
+  // Relación: un producto puede estar en muchos detalles de pedido.
+  orderItems OrderItem[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("products")
+}
+
+/**
+ * Cliente/comprador.
+ *
+ * No se borra porque puede volver a comprar
+ * y porque sus pedidos anteriores deben conservarse como historial.
+ */
+model Customer {
+  id       Int     @id @default(autoincrement())
+  name     String
+  phone    String?
+  notes    String?
+  isActive Boolean @default(true)
+
+  // Relación: un cliente puede tener muchos pedidos.
+  orders Order[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("customers")
+}
+
+/**
+ * Pedido principal.
+ *
+ * Representa una compra/pedido hecho por un cliente.
+ * Un pedido puede tener varios productos dentro de OrderItem.
+ */
+model Order {
+  id           Int         @id @default(autoincrement())
+  customerId   Int
+  sellerId     Int
+  total        Decimal     @db.Decimal(10, 2)
+  status       OrderStatus @default(PENDING)
+  purchaseDate DateTime    @default(now())
+  deliveryDate DateTime?
+  notes        String?
+
+  // Cliente que hizo el pedido.
+  customer Customer @relation(fields: [customerId], references: [id])
+
+  // Usuario/vendedor que registró el pedido.
+  seller User @relation(fields: [sellerId], references: [id])
+
+  // Productos incluidos dentro del pedido.
+  items OrderItem[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([customerId])
+  @@index([sellerId])
+  @@map("orders")
+}
+
+/**
+ * Detalle de pedido.
+ *
+ * Cada registro representa un producto dentro de un pedido.
+ *
+ * Ejemplo:
+ * Pedido #1:
+ * - Crema facial x2
+ * - Perfume x1
+ *
+ * Cada línea será un OrderItem.
+ */
+model OrderItem {
+  id        Int     @id @default(autoincrement())
+  orderId   Int
+  productId Int
+  quantity  Int
+  unitPrice Decimal @db.Decimal(10, 2)
+  subtotal  Decimal @db.Decimal(10, 2)
+
+  // Pedido al que pertenece este item.
+  order Order @relation(fields: [orderId], references: [id])
+
+  // Producto vendido en este item.
+  product Product @relation(fields: [productId], references: [id])
+
+  @@index([orderId])
+  @@index([productId])
+  @@map("order_items")
+}
