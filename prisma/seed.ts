@@ -1,11 +1,16 @@
 import { PrismaClient } from "@prisma/client";
 import { PrismaMariaDb } from "@prisma/adapter-mariadb";
-import bcrypt from "bcryptjs";
 
 /**
- * Adapter de Prisma 7 para conectar con MySQL/MariaDB.
+ * Configuración de conexión a MySQL/MariaDB.
  *
- * Usamos la misma configuración que en src/lib/prisma.ts.
+ * IMPORTANTE:
+ * Estamos usando Prisma 7 con adapter.
+ *
+ * allowPublicKeyRetrieval:
+ * - Permite que el cliente pueda obtener la llave pública RSA de MySQL.
+ * - Soluciona el error:
+ *   "RSA public key is not available client side"
  */
 const adapter = new PrismaMariaDb({
   host: "localhost",
@@ -13,88 +18,39 @@ const adapter = new PrismaMariaDb({
   user: "root",
   password: "root",
   database: "sales_control_db",
+
+  /**
+   * Necesario para algunos contenedores MySQL 8.
+   *
+   * Beneficio:
+   * Evita errores de conexión relacionados con autenticación RSA.
+   */
+  allowPublicKeyRetrieval: true,
 });
 
 /**
- * Cliente Prisma usado únicamente para ejecutar el seed.
- */
-const prisma = new PrismaClient({
-  adapter,
-});
-
-/**
- * Seed principal.
+ * Evita crear muchas instancias de PrismaClient en desarrollo.
  *
- * Crea usuarios base para probar roles:
- * - ADMIN
- * - SELLER
+ * En Next.js, por el hot reload, el código puede recargarse varias veces.
+ * Si creamos PrismaClient en cada recarga, podemos saturar conexiones.
  */
-async function main() {
-  /**
-   * Creamos contraseña encriptada para admin.
-   *
-   * Nunca guardes contraseñas en texto plano.
-   */
-  const adminPassword = await bcrypt.hash("admin123", 10);
-
-  /**
-   * upsert:
-   * - Si existe admin@test.com, no lo duplica.
-   * - Si no existe, lo crea.
-   */
-  const admin = await prisma.user.upsert({
-    where: {
-      email: "admin@test.com",
-    },
-    update: {},
-    create: {
-      name: "Administrador",
-      email: "admin@test.com",
-      password: adminPassword,
-      role: "ADMIN",
-    },
-  });
-
-  console.log("Usuario admin creado:", admin.email);
-
-  /**
-   * Creamos contraseña encriptada para vendedor.
-   */
-  const sellerPassword = await bcrypt.hash("seller123", 10);
-
-  /**
-   * Usuario vendedor para probar permisos.
-   *
-   * Este usuario NO debe poder crear productos,
-   * pero sí puede crear clientes y pedidos.
-   */
-  const seller = await prisma.user.upsert({
-    where: {
-      email: "seller@test.com",
-    },
-    update: {},
-    create: {
-      name: "Vendedor",
-      email: "seller@test.com",
-      password: sellerPassword,
-      role: "SELLER",
-    },
-  });
-
-  console.log("Usuario seller creado:", seller.email);
-}
+const globalForPrisma = globalThis as unknown as {
+  prisma: PrismaClient | undefined;
+};
 
 /**
- * Ejecutamos el seed y manejamos errores.
+ * Cliente Prisma global.
+ *
+ * Beneficio:
+ * - Reutiliza conexión en desarrollo.
+ * - Evita problemas de pool/conexiones duplicadas.
  */
-main()
-  .catch((error) => {
-    console.error("SEED_ERROR:", error);
-    process.exit(1);
-  })
-  .finally(async () => {
-    /**
-     * Cerramos conexión con la base de datos.
-     */
-    await prisma.$disconnect();
+export const prisma =
+  globalForPrisma.prisma ??
+  new PrismaClient({
+    adapter,
   });
+
+if (process.env.NODE_ENV !== "production") {
+  globalForPrisma.prisma = prisma;
+}
