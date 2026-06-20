@@ -1,37 +1,66 @@
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import type { CreateOrderDto, CreateOrderItemDto, OrderFiltersDto, UpdateOrderDto } from "./order.dto";
+import type {
+  CreateOrderDto,
+  CreateOrderItemDto,
+  OrderFiltersDto,
+  UpdateOrderDto,
+} from "./order.dto";
 import { AppJwtPayload } from "@/lib/jwt";
 
 /**
- * Normaliza los items del pedido.
+ * Normaliza los artículos del pedido por SKU.
  *
  * ¿Por qué existe esto?
- * Porque el frontend podría mandar el mismo producto dos veces:
+ * Porque el usuario podría capturar el mismo SKU dos veces:
  *
  * [
- *   { productId: 1, quantity: 2 },
- *   { productId: 1, quantity: 3 }
+ *   { sku: "123", quantity: 1 },
+ *   { sku: "123", quantity: 2 }
  * ]
  *
  * En vez de guardar dos líneas repetidas, las juntamos:
  *
  * [
- *   { productId: 1, quantity: 5 }
+ *   { sku: "123", quantity: 3 }
  * ]
+ *
+ * Beneficio:
+ * - Evita duplicados dentro del pedido.
+ * - Facilita el cálculo correcto del total.
  */
 function normalizeOrderItems(items: CreateOrderItemDto[]) {
-  const itemMap = new Map<number, number>();
+  const itemMap = new Map<string, CreateOrderItemDto>();
 
   for (const item of items) {
-    const currentQuantity = itemMap.get(item.productId) ?? 0;
-    itemMap.set(item.productId, currentQuantity + item.quantity);
+    const currentItem = itemMap.get(item.sku);
+
+    if (!currentItem) {
+      itemMap.set(item.sku, item);
+      continue;
+    }
+
+    itemMap.set(item.sku, {
+      ...currentItem,
+      /**
+       * Si el SKU viene repetido, sumamos cantidades.
+       */
+      quantity: currentItem.quantity + item.quantity,
+
+      /**
+       * Conservamos la última información escrita.
+       *
+       * Beneficio:
+       * - Si el usuario corrigió nombre, descripción o precio
+       *   en la segunda captura, usamos esa versión.
+       */
+      name: item.name,
+      description: item.description,
+      unitPrice: item.unitPrice,
+    });
   }
 
-  return Array.from(itemMap.entries()).map(([productId, quantity]) => ({
-    productId,
-    quantity,
-  }));
+  return Array.from(itemMap.values());
 }
 
 /**
@@ -51,62 +80,28 @@ export async function getOrdersService(
   filters: OrderFiltersDto,
   authUser: AppJwtPayload
 ) {
-  /**
-   * Construimos el where de Prisma de forma dinámica.
-   *
-   * Esto nos permite agregar filtros solo cuando el usuario los manda.
-   */
   const where: Prisma.OrderWhereInput = {};
 
-  /**
-   * Si el usuario es SELLER, solo puede ver sus pedidos.
-   *
-   * Esto es seguridad de backend.
-   * No dependemos de que el frontend oculte información.
-   */
   if (authUser.role === "SELLER") {
     where.sellerId = authUser.userId;
   }
 
-  /**
-   * Filtro por estado.
-   *
-   * Ejemplo:
-   * /api/orders?status=PENDING
-   */
   if (filters.status) {
     where.status = filters.status;
   }
 
-  /**
-   * Filtro por cliente.
-   *
-   * Ejemplo:
-   * /api/orders?customerId=1
-   */
   if (filters.customerId) {
     where.customerId = filters.customerId;
   }
 
-  /**
-   * Filtro por rango de fechas.
-   *
-   * Usamos createdAt porque representa cuándo se registró el pedido.
-   */
   if (filters.from || filters.to) {
     where.createdAt = {};
 
     if (filters.from) {
-      /**
-       * Fecha inicial desde las 00:00:00.
-       */
       where.createdAt.gte = new Date(`${filters.from}T00:00:00.000Z`);
     }
 
     if (filters.to) {
-      /**
-       * Fecha final hasta las 23:59:59.
-       */
       where.createdAt.lte = new Date(`${filters.to}T23:59:59.999Z`);
     }
   }
@@ -134,16 +129,23 @@ export async function getOrdersService(
     },
   });
 }
+
 /**
  * Crea un pedido nuevo.
  *
- * Reglas importantes:
+ * Nueva lógica:
  * 1. El sellerId sale del token, no del body.
  * 2. El total se calcula en backend.
- * 3. El precio unitario se toma desde Product.price.
- * 4. Se valida stock.
- * 5. Se descuenta stock.
- * 6. Todo se hace en una transacción.
+ * 3. Los artículos llegan con SKU, nombre, descripción, cantidad y precio.
+ * 4. Si el producto no existe, se crea automáticamente.
+ * 5. Si el producto ya existe, se actualiza con la información más reciente.
+ * 6. El OrderItem guarda snapshots del artículo vendido.
+ * 7. Todo se hace en una transacción.
+ *
+ * Beneficio:
+ * - El usuario no tiene que registrar productos uno por uno.
+ * - Puede crear un pedido como en catálogos tipo Avon/Natura.
+ * - Los pedidos anteriores no se dañan si después cambia el producto.
  */
 export async function createOrderService(
   data: CreateOrderDto,
@@ -152,8 +154,6 @@ export async function createOrderService(
   return prisma.$transaction(async (tx) => {
     /**
      * Validamos que el cliente exista y esté activo.
-     *
-     * No tiene sentido crear pedidos para clientes desactivados.
      */
     const customer = await tx.customer.findUnique({
       where: {
@@ -170,39 +170,20 @@ export async function createOrderService(
     }
 
     /**
-     * Juntamos productos repetidos para evitar duplicados
-     * y para validar stock correctamente.
+     * Juntamos SKUs repetidos.
      */
     const normalizedItems = normalizeOrderItems(data.items);
-
-    const productIds = normalizedItems.map((item) => item.productId);
-
-    /**
-     * Buscamos todos los productos activos que vienen en el pedido.
-     */
-    const products = await tx.product.findMany({
-      where: {
-        id: {
-          in: productIds,
-        },
-        isActive: true,
-      },
-    });
-
-    /**
-     * Creamos un mapa para encontrar productos rápido por ID.
-     */
-    const productMap = new Map(
-      products.map((product) => [product.id, product])
-    );
 
     /**
      * Aquí construiremos los items finales del pedido.
      */
     const orderItems: {
       productId: number;
+      skuSnapshot: string;
+      nameSnapshot: string;
+      descriptionSnapshot: string | null;
+      unitPriceSnapshot: Prisma.Decimal;
       quantity: number;
-      unitPrice: Prisma.Decimal;
       subtotal: Prisma.Decimal;
     }[] = [];
 
@@ -214,59 +195,59 @@ export async function createOrderService(
     let total = new Prisma.Decimal(0);
 
     for (const item of normalizedItems) {
-      const product = productMap.get(item.productId);
-
-      /**
-       * Si el producto no existe o está inactivo, detenemos el pedido.
-       */
-      if (!product) {
-        throw new Error(`Producto no disponible: ${item.productId}`);
-      }
-
-      /**
-       * Validamos stock suficiente.
-       */
-      if (product.stock < item.quantity) {
-        throw new Error(`Stock insuficiente para el producto: ${product.name}`);
-      }
-
-      const unitPrice = new Prisma.Decimal(product.price);
+      const unitPrice = new Prisma.Decimal(item.unitPrice);
       const subtotal = unitPrice.mul(item.quantity);
+
+      /**
+       * Buscamos o creamos el producto por SKU.
+       *
+       * Si el SKU ya existe:
+       * - Actualizamos nombre, descripción y precio.
+       *
+       * Si el SKU no existe:
+       * - Creamos el producto automáticamente.
+       *
+       * Beneficio:
+       * - El catálogo se va formando mientras se capturan pedidos.
+       */
+      const product = await tx.product.upsert({
+        where: {
+          sku: item.sku,
+        },
+        update: {
+          name: item.name,
+          description: item.description ?? null,
+          price: unitPrice,
+          isActive: true,
+        },
+        create: {
+          sku: item.sku,
+          name: item.name,
+          description: item.description ?? null,
+          price: unitPrice,
+          stock: 0,
+          isActive: true,
+        },
+      });
 
       total = total.add(subtotal);
 
       orderItems.push({
         productId: product.id,
+        skuSnapshot: item.sku,
+        nameSnapshot: item.name,
+        descriptionSnapshot: item.description ?? null,
+        unitPriceSnapshot: unitPrice,
         quantity: item.quantity,
-        unitPrice,
         subtotal,
       });
     }
 
     /**
-     * Descontamos stock de cada producto.
+     * Creamos el pedido primero.
      *
-     * Esto se hace dentro de la transacción:
-     * si algo falla después, Prisma revierte todo.
-     */
-    for (const item of orderItems) {
-      await tx.product.update({
-        where: {
-          id: item.productId,
-        },
-        data: {
-          stock: {
-            decrement: item.quantity,
-          },
-        },
-      });
-    }
-
-    /**
-     * Creamos el pedido y sus items.
-     *
-     * El total ya fue calculado por backend.
-     * El sellerId viene del token.
+     * Beneficio:
+     * - Obtenemos el orderId para crear los detalles después.
      */
     const order = await tx.order.create({
       data: {
@@ -275,14 +256,41 @@ export async function createOrderService(
         total,
         deliveryDate: data.deliveryDate ? new Date(data.deliveryDate) : null,
         notes: data.notes,
-        items: {
-          create: orderItems.map((item) => ({
-            productId: item.productId,
-            quantity: item.quantity,
-            unitPrice: item.unitPrice,
-            subtotal: item.subtotal,
-          })),
-        },
+      },
+    });
+
+    /**
+     * Creamos los artículos del pedido.
+     *
+     * Guardamos snapshots:
+     * - SKU usado
+     * - nombre usado
+     * - descripción usada
+     * - precio usado
+     *
+     * Beneficio:
+     * - Si el producto cambia después, este pedido conserva
+     *   los datos originales de la venta.
+     */
+    await tx.orderItem.createMany({
+      data: orderItems.map((item) => ({
+        orderId: order.id,
+        productId: item.productId,
+        skuSnapshot: item.skuSnapshot,
+        nameSnapshot: item.nameSnapshot,
+        descriptionSnapshot: item.descriptionSnapshot,
+        unitPriceSnapshot: item.unitPriceSnapshot,
+        quantity: item.quantity,
+        subtotal: item.subtotal,
+      })),
+    });
+
+    /**
+     * Regresamos el pedido completo con sus relaciones.
+     */
+    const orderWithDetails = await tx.order.findUnique({
+      where: {
+        id: order.id,
       },
       include: {
         customer: true,
@@ -302,7 +310,7 @@ export async function createOrderService(
       },
     });
 
-    return order;
+    return orderWithDetails;
   });
 }
 
@@ -312,7 +320,8 @@ export async function createOrderService(
  * Incluye:
  * - Cliente
  * - Vendedor
- * - Productos dentro del pedido
+ * - Artículos del pedido
+ * - Producto relacionado, si existe
  */
 export async function getOrderByIdService(id: number) {
   const order = await prisma.order.findUnique({
@@ -351,138 +360,57 @@ export async function getOrderByIdService(id: number) {
  * - status
  * - deliveryDate
  * - notes
- *get
+ *
  * Importante:
- * Si el pedido se cancela, regresamos el stock.
- * Si un pedido cancelado se reactiva, volvemos a descontar stock.
+ * - Ya no ajustamos stock aquí.
+ * - En este flujo el pedido funciona más como registro de venta/catálogo.
+ *
+ * Beneficio:
+ * - Evitamos errores porque los productos pueden crearse automáticamente
+ *   con stock 0.
+ * - El usuario puede registrar pedidos sin manejar inventario todavía.
  */
 export async function updateOrderService(id: number, data: UpdateOrderDto) {
-  return prisma.$transaction(async (tx) => {
-    /**
-     * Buscamos el pedido con sus items.
-     *
-     * Necesitamos los items para saber cuánto stock regresar
-     * si el pedido cambia a CANCELLED.
-     */
-    const currentOrder = await tx.order.findUnique({
-      where: {
-        id,
-      },
-      include: {
-        items: true,
-      },
-    });
-
-    if (!currentOrder) {
-      throw new Error("Pedido no encontrado");
-    }
-
-    /**
-     * Si viene un nuevo status, revisamos si afecta stock.
-     */
-    if (data.status && data.status !== currentOrder.status) {
-      const oldStatus = currentOrder.status;
-      const newStatus = data.status;
-
-      /**
-       * Caso 1:
-       * El pedido estaba activo y ahora se cancela.
-       *
-       * Como al crear el pedido ya descontamos stock,
-       * al cancelarlo debemos regresar esas unidades.
-       */
-      if (oldStatus !== "CANCELLED" && newStatus === "CANCELLED") {
-        for (const item of currentOrder.items) {
-          await tx.product.update({
-            where: {
-              id: item.productId,
-            },
-            data: {
-              stock: {
-                increment: item.quantity,
-              },
-            },
-          });
-        }
-      }
-
-      /**
-       * Caso 2:
-       * El pedido estaba cancelado y se reactiva.
-       *
-       * Aquí debemos volver a descontar stock.
-       * Primero validamos que todavía exista suficiente stock.
-       */
-      if (oldStatus === "CANCELLED" && newStatus !== "CANCELLED") {
-        for (const item of currentOrder.items) {
-          const product = await tx.product.findUnique({
-            where: {
-              id: item.productId,
-            },
-          });
-
-          if (!product || !product.isActive) {
-            throw new Error(`Producto no disponible: ${item.productId}`);
-          }
-
-          if (product.stock < item.quantity) {
-            throw new Error(`Stock insuficiente para el producto: ${product.name}`);
-          }
-        }
-
-        /**
-         * Si todo tiene stock suficiente, ahora sí descontamos.
-         */
-        for (const item of currentOrder.items) {
-          await tx.product.update({
-            where: {
-              id: item.productId,
-            },
-            data: {
-              stock: {
-                decrement: item.quantity,
-              },
-            },
-          });
-        }
-      }
-    }
-
-    /**
-     * Actualizamos el pedido.
-     *
-     * No actualizamos items aquí.
-     * Eso queda para una función más avanzada.
-     */
-    const updatedOrder = await tx.order.update({
-      where: {
-        id,
-      },
-      data: {
-        status: data.status,
-        deliveryDate: data.deliveryDate ? new Date(data.deliveryDate) : data.deliveryDate,
-        notes: data.notes,
-      },
-      include: {
-        customer: true,
-        seller: {
-          select: {
-            id: true,
-            name: true,
-            email: true,
-            role: true,
-          },
-        },
-        items: {
-          include: {
-            product: true,
-          },
-        },
-      },
-    });
-
-    return updatedOrder;
+  const currentOrder = await prisma.order.findUnique({
+    where: {
+      id,
+    },
   });
+
+  if (!currentOrder) {
+    throw new Error("Pedido no encontrado");
+  }
+
+  const updatedOrder = await prisma.order.update({
+    where: {
+      id,
+    },
+    data: {
+      status: data.status,
+      deliveryDate: data.deliveryDate
+        ? new Date(data.deliveryDate)
+        : data.deliveryDate,
+      notes: data.notes,
+    },
+    include: {
+      customer: true,
+      seller: {
+        select: {
+          id: true,
+          name: true,
+          email: true,
+          role: true,
+        },
+      },
+      items: {
+        include: {
+          product: true,
+        },
+      },
+    },
+  });
+
+  return updatedOrder;
 }
 
 /**

@@ -1,17 +1,41 @@
 import { z } from "zod";
 
 /**
- * DTO para cada producto dentro de un pedido.
+ * DTO para cada artículo dentro de un pedido.
  *
- * Un pedido puede tener varios productos.
+ * Nueva lógica:
+ * - El usuario NO necesita registrar productos antes.
+ * - El usuario captura el SKU/código del catálogo al crear el pedido.
+ * - Si el SKU no existe como producto, el backend lo crea automáticamente.
+ *
+ * Beneficio:
+ * - El flujo es más rápido para ventas tipo Avon/Natura.
+ * - El pedido puede crear productos nuevos sin pasar por el módulo Productos.
  */
 export const createOrderItemSchema = z.object({
-  productId: z
-    .number({
-      error: "El productId debe ser un número",
+  sku: z
+    .string({
+      error: "El SKU debe ser texto",
     })
-    .int("El productId debe ser un número entero")
-    .positive("El productId debe ser mayor a 0"),
+    .trim()
+    .min(1, "El SKU es obligatorio")
+    .max(80, "El SKU no puede tener más de 80 caracteres")
+    .transform((value) => value.toUpperCase()),
+
+  name: z
+    .string({
+      error: "El nombre del artículo debe ser texto",
+    })
+    .trim()
+    .min(1, "El nombre del artículo es obligatorio")
+    .max(150, "El nombre no puede tener más de 150 caracteres"),
+
+  description: z
+    .string()
+    .trim()
+    .max(500, "La descripción no puede tener más de 500 caracteres")
+    .optional()
+    .nullable(),
 
   quantity: z
     .number({
@@ -19,14 +43,21 @@ export const createOrderItemSchema = z.object({
     })
     .int("La cantidad debe ser un número entero")
     .positive("La cantidad debe ser mayor a 0"),
+
+  unitPrice: z
+    .number({
+      error: "El precio unitario debe ser un número",
+    })
+    .positive("El precio unitario debe ser mayor a 0"),
 });
 
 /**
  * DTO para crear un pedido.
  *
  * Importante:
- * El frontend NO manda total.
- * El backend calcula el total usando el precio real del producto.
+ * - El frontend NO manda total.
+ * - El backend calcula el total usando quantity * unitPrice.
+ * - Los productos se crean automáticamente por SKU si no existen.
  */
 export const createOrderSchema = z.object({
   customerId: z
@@ -46,7 +77,7 @@ export const createOrderSchema = z.object({
 
   items: z
     .array(createOrderItemSchema)
-    .min(1, "El pedido debe tener al menos un producto"),
+    .min(1, "El pedido debe tener al menos un artículo"),
 });
 
 /**
@@ -69,8 +100,7 @@ export const orderStatusSchema = z.enum([
  * - deliveryDate
  * - notes
  *
- * No permitimos editar items todavía porque eso implica recalcular total
- * y ajustar stock de forma más delicada.
+ * No permitimos editar items todavía porque eso implica recalcular total.
  */
 export const updateOrderSchema = z.object({
   status: orderStatusSchema.optional(),
@@ -132,9 +162,6 @@ export const orderFiltersSchema = z
     to: z.string().optional(),
   })
   .superRefine((filters, context) => {
-    /**
-     * Validamos from si viene.
-     */
     if (filters.from) {
       const fromDate = new Date(filters.from);
 
@@ -147,9 +174,6 @@ export const orderFiltersSchema = z
       }
     }
 
-    /**
-     * Validamos to si viene.
-     */
     if (filters.to) {
       const toDate = new Date(filters.to);
 
@@ -162,9 +186,6 @@ export const orderFiltersSchema = z
       }
     }
 
-    /**
-     * Si vienen ambas fechas, from no debe ser mayor que to.
-     */
     if (filters.from && filters.to) {
       const fromDate = new Date(filters.from);
       const toDate = new Date(filters.to);

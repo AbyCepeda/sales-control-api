@@ -72,11 +72,14 @@ model User {
 /**
  * Producto disponible para vender.
  *
- * No se elimina físicamente.
- * Se desactiva con isActive para conservar historial.
+ * En este proyecto el producto puede crearse automáticamente
+ * cuando se registra un pedido.
+ *
+ * El SKU es el código/número del artículo dentro del catálogo.
  */
 model Product {
   id          Int     @id @default(autoincrement())
+  sku         String  @unique
   name        String
   description String?
   price       Decimal @db.Decimal(10, 2)
@@ -150,30 +153,38 @@ model Order {
 /**
  * Detalle de pedido.
  *
- * Cada registro representa un producto dentro de un pedido.
+ * Cada registro representa un artículo dentro de un pedido.
  *
- * Ejemplo:
- * Pedido #1:
- * - Crema facial x2
- * - Perfume x1
+ * Además de relacionarse con Product, guarda una copia snapshot
+ * de los datos usados al momento de la venta.
  *
- * Cada línea será un OrderItem.
+ * Beneficio:
+ * - Si el producto cambia después, el pedido conserva el SKU,
+ *   nombre, descripción y precio originales.
  */
 model OrderItem {
-  id        Int     @id @default(autoincrement())
+  id        Int  @id @default(autoincrement())
   orderId   Int
-  productId Int
-  quantity  Int
-  unitPrice Decimal @db.Decimal(10, 2)
-  subtotal  Decimal @db.Decimal(10, 2)
+  productId Int?
+
+  skuSnapshot         String
+  nameSnapshot        String
+  descriptionSnapshot String?
+  unitPriceSnapshot   Decimal @db.Decimal(10, 2)
+
+  quantity Int
+  subtotal Decimal @db.Decimal(10, 2)
 
   // Pedido al que pertenece este item.
   order Order @relation(fields: [orderId], references: [id])
 
   // Producto vendido en este item.
-  product Product @relation(fields: [productId], references: [id])
+  // Es opcional porque el pedido debe conservarse aunque el producto
+  // cambie o se desactive después.
+  product Product? @relation(fields: [productId], references: [id])
 
   @@index([orderId])
   @@index([productId])
+  @@index([skuSnapshot])
   @@map("order_items")
 }
