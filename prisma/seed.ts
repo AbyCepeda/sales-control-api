@@ -1,16 +1,14 @@
 import { PrismaClient } from "@prisma/client";
 import { PrismaMariaDb } from "@prisma/adapter-mariadb";
+import bcrypt from "bcryptjs";
 
 /**
- * Configuración de conexión a MySQL/MariaDB.
+ * Adapter de MariaDB/MySQL para Prisma 7.
  *
- * IMPORTANTE:
- * Estamos usando Prisma 7 con adapter.
+ * Debe coincidir con la conexión del backend.
  *
- * allowPublicKeyRetrieval:
- * - Permite que el cliente pueda obtener la llave pública RSA de MySQL.
- * - Soluciona el error:
- *   "RSA public key is not available client side"
+ * Beneficio:
+ * - Permite ejecutar el seed usando la misma base de datos.
  */
 const adapter = new PrismaMariaDb({
   host: "localhost",
@@ -18,39 +16,136 @@ const adapter = new PrismaMariaDb({
   user: "root",
   password: "root",
   database: "sales_control_db",
-
-  /**
-   * Necesario para algunos contenedores MySQL 8.
-   *
-   * Beneficio:
-   * Evita errores de conexión relacionados con autenticación RSA.
-   */
   allowPublicKeyRetrieval: true,
 });
 
 /**
- * Evita crear muchas instancias de PrismaClient en desarrollo.
- *
- * En Next.js, por el hot reload, el código puede recargarse varias veces.
- * Si creamos PrismaClient en cada recarga, podemos saturar conexiones.
+ * Cliente Prisma para insertar datos iniciales.
  */
-const globalForPrisma = globalThis as unknown as {
-  prisma: PrismaClient | undefined;
-};
+const prisma = new PrismaClient({
+  adapter,
+});
 
 /**
- * Cliente Prisma global.
+ * Seed principal.
+ *
+ * Crea:
+ * - Usuario ADMIN
+ * - Usuario SELLER
+ * - Cliente de prueba
  *
  * Beneficio:
- * - Reutiliza conexión en desarrollo.
- * - Evita problemas de pool/conexiones duplicadas.
+ * - Después de hacer migrate reset puedes volver a iniciar sesión.
+ * - Puedes probar clientes y pedidos sin capturar todo manualmente.
  */
-export const prisma =
-  globalForPrisma.prisma ??
-  new PrismaClient({
-    adapter,
+async function main() {
+  const adminPassword = await bcrypt.hash("admin123", 10);
+  const sellerPassword = await bcrypt.hash("seller123", 10);
+
+  /**
+   * Usuario administrador.
+   *
+   * Login:
+   * admin@test.com
+   * admin123
+   */
+  const admin = await prisma.user.upsert({
+    where: {
+      email: "admin@test.com",
+    },
+    update: {
+      name: "Administrador",
+      password: adminPassword,
+      role: "ADMIN",
+    },
+    create: {
+      name: "Administrador",
+      email: "admin@test.com",
+      password: adminPassword,
+      role: "ADMIN",
+    },
   });
 
-if (process.env.NODE_ENV !== "production") {
-  globalForPrisma.prisma = prisma;
+  /**
+   * Usuario vendedor.
+   *
+   * Login:
+   * seller@test.com
+   * seller123
+   */
+  const seller = await prisma.user.upsert({
+    where: {
+      email: "seller@test.com",
+    },
+    update: {
+      name: "Vendedor Demo",
+      password: sellerPassword,
+      role: "SELLER",
+    },
+    create: {
+      name: "Vendedor Demo",
+      email: "seller@test.com",
+      password: sellerPassword,
+      role: "SELLER",
+    },
+  });
+
+  /**
+   * Cliente de prueba.
+   *
+   * Nota:
+   * Tu modelo Customer NO tiene address ni reference.
+   * Por eso usamos notes.
+   */
+  const customer = await prisma.customer.upsert({
+    where: {
+      id: 1,
+    },
+    update: {
+      name: "Cliente de prueba",
+      phone: "8440000000",
+      notes: "Cliente creado desde seed para pruebas",
+      isActive: true,
+    },
+    create: {
+      name: "Cliente de prueba",
+      phone: "8440000000",
+      notes: "Cliente creado desde seed para pruebas",
+      isActive: true,
+    },
+  });
+
+  console.log("Seed ejecutado correctamente");
+
+  console.log({
+    admin: {
+      id: admin.id,
+      email: admin.email,
+      role: admin.role,
+    },
+    seller: {
+      id: seller.id,
+      email: seller.email,
+      role: seller.role,
+    },
+    customer: {
+      id: customer.id,
+      name: customer.name,
+    },
+  });
 }
+
+/**
+ * Ejecuta el seed y cierra la conexión.
+ *
+ * Beneficio:
+ * - Evita que la terminal se quede colgada.
+ */
+main()
+  .catch((error) => {
+    console.error("SEED_ERROR:", error);
+    process.exit(1);
+  })
+  .finally(async () => {
+    await prisma.$disconnect();
+  });
