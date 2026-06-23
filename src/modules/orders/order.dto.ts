@@ -1,16 +1,16 @@
 import { z } from "zod";
 
 /**
- * DTO para cada artículo dentro de un pedido.
+ * DTO para cada artículo dentro del pedido de un cliente.
  *
  * Nueva lógica:
- * - El usuario NO necesita registrar productos antes.
- * - El usuario captura el SKU/código del catálogo al crear el pedido.
- * - Si el SKU no existe como producto, el backend lo crea automáticamente.
+ * - Ya no mandamos productId.
+ * - Mandamos SKU, nombre, descripción, cantidad y precio.
+ * - El backend crea o actualiza el producto automáticamente por SKU.
  *
  * Beneficio:
- * - El flujo es más rápido para ventas tipo Avon/Natura.
- * - El pedido puede crear productos nuevos sin pasar por el módulo Productos.
+ * - El usuario puede capturar artículos de catálogo directamente.
+ * - No necesita registrar productos antes.
  */
 export const createOrderItemSchema = z.object({
   sku: z
@@ -52,14 +52,17 @@ export const createOrderItemSchema = z.object({
 });
 
 /**
- * DTO para crear un pedido.
+ * DTO para un cliente dentro del pedido general.
  *
- * Importante:
- * - El frontend NO manda total.
- * - El backend calcula el total usando quantity * unitPrice.
- * - Los productos se crean automáticamente por SKU si no existen.
+ * Nueva lógica:
+ * - Un pedido general puede tener varios clientes.
+ * - Cada cliente tiene su propia lista de artículos.
+ *
+ * Beneficio:
+ * - Podemos separar cuánto pidió cada cliente.
+ * - Podemos calcular total por cliente y total general.
  */
-export const createOrderSchema = z.object({
+export const createCustomerOrderSchema = z.object({
   customerId: z
     .number({
       error: "El customerId debe ser un número",
@@ -67,6 +70,36 @@ export const createOrderSchema = z.object({
     .int("El customerId debe ser un número entero")
     .positive("El customerId debe ser mayor a 0"),
 
+  notes: z.string().trim().optional().nullable(),
+
+  items: z
+    .array(createOrderItemSchema)
+    .min(1, "Cada cliente debe tener al menos un artículo"),
+});
+
+/**
+ * DTO para crear un pedido general.
+ *
+ * Nueva estructura:
+ * {
+ *   "notes": "Pedido campaña junio",
+ *   "customers": [
+ *     {
+ *       "customerId": 1,
+ *       "items": [...]
+ *     },
+ *     {
+ *       "customerId": 2,
+ *       "items": [...]
+ *     }
+ *   ]
+ * }
+ *
+ * Beneficio:
+ * - Un solo pedido puede contener varios clientes.
+ * - Cada cliente conserva sus propios artículos.
+ */
+export const createOrderSchema = z.object({
   deliveryDate: z
     .string()
     .datetime("La fecha de entrega debe tener formato ISO válido")
@@ -75,9 +108,9 @@ export const createOrderSchema = z.object({
 
   notes: z.string().trim().optional().nullable(),
 
-  items: z
-    .array(createOrderItemSchema)
-    .min(1, "El pedido debe tener al menos un artículo"),
+  customers: z
+    .array(createCustomerOrderSchema)
+    .min(1, "El pedido debe tener al menos un cliente"),
 });
 
 /**
@@ -93,14 +126,16 @@ export const orderStatusSchema = z.enum([
 ]);
 
 /**
- * DTO para actualizar un pedido.
+ * DTO para actualizar un pedido general.
  *
  * Por ahora solo permitimos actualizar:
  * - status
  * - deliveryDate
  * - notes
  *
- * No permitimos editar items todavía porque eso implica recalcular total.
+ * Beneficio:
+ * - Evitamos modificar items accidentalmente.
+ * - La edición de artículos la podemos hacer después con una función dedicada.
  */
 export const updateOrderSchema = z.object({
   status: orderStatusSchema.optional(),
@@ -128,7 +163,10 @@ export const orderFiltersSchema = z
 
     /**
      * customerId viene desde la URL como string.
-     * Lo transformamos a number cuando existe.
+     *
+     * Nueva lógica:
+     * - Ya no está directo en Order.
+     * - Ahora se filtra a través de customerOrders.
      */
     customerId: z
       .string()
@@ -201,6 +239,7 @@ export const orderFiltersSchema = z
   });
 
 export type CreateOrderDto = z.infer<typeof createOrderSchema>;
+export type CreateCustomerOrderDto = z.infer<typeof createCustomerOrderSchema>;
 export type CreateOrderItemDto = z.infer<typeof createOrderItemSchema>;
 export type UpdateOrderDto = z.infer<typeof updateOrderSchema>;
 export type OrderFiltersDto = z.infer<typeof orderFiltersSchema>;

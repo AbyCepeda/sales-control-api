@@ -1,6 +1,7 @@
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import type {
+  CreateCustomerOrderDto,
   CreateOrderDto,
   CreateOrderItemDto,
   OrderFiltersDto,
@@ -9,25 +10,22 @@ import type {
 import { AppJwtPayload } from "@/lib/jwt";
 
 /**
- * Normaliza los artículos del pedido por SKU.
+ * Normaliza artículos por SKU.
  *
- * ¿Por qué existe esto?
- * Porque el usuario podría capturar el mismo SKU dos veces:
+ * Para qué sirve:
+ * - Si el mismo SKU viene repetido dentro del mismo cliente,
+ *   juntamos las cantidades en una sola línea.
  *
- * [
- *   { sku: "123", quantity: 1 },
- *   { sku: "123", quantity: 2 }
- * ]
+ * Ejemplo:
+ * A123 x1
+ * A123 x2
  *
- * En vez de guardar dos líneas repetidas, las juntamos:
- *
- * [
- *   { sku: "123", quantity: 3 }
- * ]
+ * Resultado:
+ * A123 x3
  *
  * Beneficio:
- * - Evita duplicados dentro del pedido.
- * - Facilita el cálculo correcto del total.
+ * - Evita duplicados innecesarios.
+ * - Calcula mejor los totales por cliente.
  */
 function normalizeOrderItems(items: CreateOrderItemDto[]) {
   const itemMap = new Map<string, CreateOrderItemDto>();
@@ -42,16 +40,13 @@ function normalizeOrderItems(items: CreateOrderItemDto[]) {
 
     itemMap.set(item.sku, {
       ...currentItem,
-      /**
-       * Si el SKU viene repetido, sumamos cantidades.
-       */
       quantity: currentItem.quantity + item.quantity,
 
       /**
        * Conservamos la última información escrita.
        *
        * Beneficio:
-       * - Si el usuario corrigió nombre, descripción o precio
+       * - Si el usuario corrigió el nombre, descripción o precio
        *   en la segunda captura, usamos esa versión.
        */
       name: item.name,
@@ -64,7 +59,40 @@ function normalizeOrderItems(items: CreateOrderItemDto[]) {
 }
 
 /**
- * Obtiene pedidos con filtros opcionales.
+ * Normaliza clientes dentro del pedido general.
+ *
+ * Para qué sirve:
+ * - Si el mismo cliente viene dos veces en el body,
+ *   juntamos sus artículos en un solo CustomerOrder.
+ *
+ * Beneficio:
+ * - Evita chocar con el índice único:
+ *   @@unique([orderId, customerId])
+ * - Mantiene todos los artículos del cliente juntos.
+ */
+function normalizeCustomerOrders(customers: CreateCustomerOrderDto[]) {
+  const customerMap = new Map<number, CreateCustomerOrderDto>();
+
+  for (const customerOrder of customers) {
+    const currentCustomerOrder = customerMap.get(customerOrder.customerId);
+
+    if (!currentCustomerOrder) {
+      customerMap.set(customerOrder.customerId, customerOrder);
+      continue;
+    }
+
+    customerMap.set(customerOrder.customerId, {
+      ...currentCustomerOrder,
+      notes: customerOrder.notes ?? currentCustomerOrder.notes,
+      items: [...currentCustomerOrder.items, ...customerOrder.items],
+    });
+  }
+
+  return Array.from(customerMap.values());
+}
+
+/**
+ * Obtiene pedidos generales con filtros opcionales.
  *
  * Filtros disponibles:
  * - status
@@ -72,9 +100,13 @@ function normalizeOrderItems(items: CreateOrderItemDto[]) {
  * - from
  * - to
  *
- * Reglas de permisos:
+ * Reglas:
  * - ADMIN ve todos los pedidos.
- * - SELLER solo ve sus propios pedidos.
+ * - SELLER ve solo sus pedidos.
+ *
+ * Nueva lógica:
+ * - customerId ya no está directo en Order.
+ * - Ahora se busca dentro de customerOrders.
  */
 export async function getOrdersService(
   filters: OrderFiltersDto,
@@ -91,7 +123,11 @@ export async function getOrdersService(
   }
 
   if (filters.customerId) {
-    where.customerId = filters.customerId;
+    where.customerOrders = {
+      some: {
+        customerId: filters.customerId,
+      },
+    };
   }
 
   if (filters.from || filters.to) {
@@ -109,7 +145,6 @@ export async function getOrdersService(
   return prisma.order.findMany({
     where,
     include: {
-      customer: true,
       seller: {
         select: {
           id: true,
@@ -118,9 +153,14 @@ export async function getOrdersService(
           role: true,
         },
       },
-      items: {
+      customerOrders: {
         include: {
-          product: true,
+          customer: true,
+          items: {
+            include: {
+              product: true,
+            },
+          },
         },
       },
     },
@@ -131,169 +171,201 @@ export async function getOrdersService(
 }
 
 /**
- * Crea un pedido nuevo.
+ * Crea un pedido general.
  *
  * Nueva lógica:
- * 1. El sellerId sale del token, no del body.
- * 2. El total se calcula en backend.
- * 3. Los artículos llegan con SKU, nombre, descripción, cantidad y precio.
- * 4. Si el producto no existe, se crea automáticamente.
- * 5. Si el producto ya existe, se actualiza con la información más reciente.
- * 6. El OrderItem guarda snapshots del artículo vendido.
- * 7. Todo se hace en una transacción.
+ * - Un pedido general puede tener varios clientes.
+ * - Cada cliente tiene sus propios artículos.
+ * - Los productos se crean o actualizan automáticamente por SKU.
+ * - Se calcula total por cliente.
+ * - Se calcula total general del pedido.
  *
  * Beneficio:
- * - El usuario no tiene que registrar productos uno por uno.
- * - Puede crear un pedido como en catálogos tipo Avon/Natura.
- * - Los pedidos anteriores no se dañan si después cambia el producto.
+ * - Soporta pedidos tipo catálogo.
+ * - Puedes juntar pedidos de varias personas en una sola captura.
+ * - Mantienes historial por cliente y total general.
  */
 export async function createOrderService(
   data: CreateOrderDto,
   sellerId: number
 ) {
   return prisma.$transaction(async (tx) => {
-    /**
-     * Validamos que el cliente exista y esté activo.
-     */
-    const customer = await tx.customer.findUnique({
-      where: {
-        id: data.customerId,
-      },
-    });
-
-    if (!customer) {
-      throw new Error("Cliente no encontrado");
-    }
-
-    if (!customer.isActive) {
-      throw new Error("Cliente inactivo");
-    }
+    const normalizedCustomerOrders = normalizeCustomerOrders(data.customers);
 
     /**
-     * Juntamos SKUs repetidos.
+     * Aquí guardamos los clientes ya procesados antes de crear el pedido.
+     *
+     * Beneficio:
+     * - Primero calculamos totales.
+     * - Luego creamos el Order general con el total correcto.
      */
-    const normalizedItems = normalizeOrderItems(data.items);
-
-    /**
-     * Aquí construiremos los items finales del pedido.
-     */
-    const orderItems: {
-      productId: number;
-      skuSnapshot: string;
-      nameSnapshot: string;
-      descriptionSnapshot: string | null;
-      unitPriceSnapshot: Prisma.Decimal;
-      quantity: number;
-      subtotal: Prisma.Decimal;
+    const preparedCustomerOrders: {
+      customerId: number;
+      notes: string | null;
+      total: Prisma.Decimal;
+      items: {
+        productId: number;
+        skuSnapshot: string;
+        nameSnapshot: string;
+        descriptionSnapshot: string | null;
+        unitPriceSnapshot: Prisma.Decimal;
+        quantity: number;
+        subtotal: Prisma.Decimal;
+      }[];
     }[] = [];
 
     /**
-     * Total acumulado del pedido.
-     *
-     * Usamos Prisma.Decimal para evitar errores de precisión con dinero.
+     * Total completo del pedido general.
      */
-    let total = new Prisma.Decimal(0);
+    let orderTotal = new Prisma.Decimal(0);
 
-    for (const item of normalizedItems) {
-      const unitPrice = new Prisma.Decimal(item.unitPrice);
-      const subtotal = unitPrice.mul(item.quantity);
-
+    for (const customerOrder of normalizedCustomerOrders) {
       /**
-       * Buscamos o creamos el producto por SKU.
-       *
-       * Si el SKU ya existe:
-       * - Actualizamos nombre, descripción y precio.
-       *
-       * Si el SKU no existe:
-       * - Creamos el producto automáticamente.
+       * Validamos que el cliente exista y esté activo.
        *
        * Beneficio:
-       * - El catálogo se va formando mientras se capturan pedidos.
+       * - Evita crear pedidos para clientes inexistentes o desactivados.
        */
-      const product = await tx.product.upsert({
+      const customer = await tx.customer.findUnique({
         where: {
-          sku: item.sku,
-        },
-        update: {
-          name: item.name,
-          description: item.description ?? null,
-          price: unitPrice,
-          isActive: true,
-        },
-        create: {
-          sku: item.sku,
-          name: item.name,
-          description: item.description ?? null,
-          price: unitPrice,
-          stock: 0,
-          isActive: true,
+          id: customerOrder.customerId,
         },
       });
 
-      total = total.add(subtotal);
+      if (!customer) {
+        throw new Error(`Cliente no encontrado: ${customerOrder.customerId}`);
+      }
 
-      orderItems.push({
-        productId: product.id,
-        skuSnapshot: item.sku,
-        nameSnapshot: item.name,
-        descriptionSnapshot: item.description ?? null,
-        unitPriceSnapshot: unitPrice,
-        quantity: item.quantity,
-        subtotal,
+      if (!customer.isActive) {
+        throw new Error(`Cliente inactivo: ${customer.name}`);
+      }
+
+      const normalizedItems = normalizeOrderItems(customerOrder.items);
+
+      let customerTotal = new Prisma.Decimal(0);
+
+      const preparedItems: {
+        productId: number;
+        skuSnapshot: string;
+        nameSnapshot: string;
+        descriptionSnapshot: string | null;
+        unitPriceSnapshot: Prisma.Decimal;
+        quantity: number;
+        subtotal: Prisma.Decimal;
+      }[] = [];
+
+      for (const item of normalizedItems) {
+        const unitPrice = new Prisma.Decimal(item.unitPrice);
+        const subtotal = unitPrice.mul(item.quantity);
+
+        /**
+         * Creamos o actualizamos producto por SKU.
+         *
+         * Si existe:
+         * - actualizamos nombre, descripción y precio.
+         *
+         * Si no existe:
+         * - lo creamos automáticamente.
+         *
+         * Beneficio:
+         * - El catálogo se alimenta mientras capturas pedidos.
+         */
+        const product = await tx.product.upsert({
+          where: {
+            sku: item.sku,
+          },
+          update: {
+            name: item.name,
+            description: item.description ?? null,
+            price: unitPrice,
+            isActive: true,
+          },
+          create: {
+            sku: item.sku,
+            name: item.name,
+            description: item.description ?? null,
+            price: unitPrice,
+            stock: 0,
+            isActive: true,
+          },
+        });
+
+        customerTotal = customerTotal.add(subtotal);
+
+        preparedItems.push({
+          productId: product.id,
+          skuSnapshot: item.sku,
+          nameSnapshot: item.name,
+          descriptionSnapshot: item.description ?? null,
+          unitPriceSnapshot: unitPrice,
+          quantity: item.quantity,
+          subtotal,
+        });
+      }
+
+      orderTotal = orderTotal.add(customerTotal);
+
+      preparedCustomerOrders.push({
+        customerId: customerOrder.customerId,
+        notes: customerOrder.notes ?? null,
+        total: customerTotal,
+        items: preparedItems,
       });
     }
 
     /**
-     * Creamos el pedido primero.
+     * Creamos el pedido general.
      *
      * Beneficio:
-     * - Obtenemos el orderId para crear los detalles después.
+     * - Guarda el total completo de todos los clientes.
      */
     const order = await tx.order.create({
       data: {
-        customerId: data.customerId,
         sellerId,
-        total,
+        total: orderTotal,
         deliveryDate: data.deliveryDate ? new Date(data.deliveryDate) : null,
-        notes: data.notes,
+        notes: data.notes ?? null,
       },
     });
 
     /**
-     * Creamos los artículos del pedido.
-     *
-     * Guardamos snapshots:
-     * - SKU usado
-     * - nombre usado
-     * - descripción usada
-     * - precio usado
+     * Creamos cada CustomerOrder y sus artículos.
      *
      * Beneficio:
-     * - Si el producto cambia después, este pedido conserva
-     *   los datos originales de la venta.
+     * - Cada cliente queda separado dentro del pedido general.
      */
-    await tx.orderItem.createMany({
-      data: orderItems.map((item) => ({
-        orderId: order.id,
-        productId: item.productId,
-        skuSnapshot: item.skuSnapshot,
-        nameSnapshot: item.nameSnapshot,
-        descriptionSnapshot: item.descriptionSnapshot,
-        unitPriceSnapshot: item.unitPriceSnapshot,
-        quantity: item.quantity,
-        subtotal: item.subtotal,
-      })),
-    });
+    for (const preparedCustomerOrder of preparedCustomerOrders) {
+      const createdCustomerOrder = await tx.customerOrder.create({
+        data: {
+          orderId: order.id,
+          customerId: preparedCustomerOrder.customerId,
+          total: preparedCustomerOrder.total,
+          notes: preparedCustomerOrder.notes,
+        },
+      });
+
+      await tx.orderItem.createMany({
+        data: preparedCustomerOrder.items.map((item) => ({
+          customerOrderId: createdCustomerOrder.id,
+          productId: item.productId,
+          skuSnapshot: item.skuSnapshot,
+          nameSnapshot: item.nameSnapshot,
+          descriptionSnapshot: item.descriptionSnapshot,
+          unitPriceSnapshot: item.unitPriceSnapshot,
+          quantity: item.quantity,
+          subtotal: item.subtotal,
+        })),
+      });
+    }
 
     /**
-     * Regresamos el pedido completo con sus relaciones.
+     * Regresamos el pedido completo.
      */
     const orderWithDetails = await tx.order.findUnique({
       where: {
         id: order.id,
       },
       include: {
-        customer: true,
         seller: {
           select: {
             id: true,
@@ -302,9 +374,14 @@ export async function createOrderService(
             role: true,
           },
         },
-        items: {
+        customerOrders: {
           include: {
-            product: true,
+            customer: true,
+            items: {
+              include: {
+                product: true,
+              },
+            },
           },
         },
       },
@@ -315,13 +392,16 @@ export async function createOrderService(
 }
 
 /**
- * Obtiene un pedido por ID con todos sus detalles.
+ * Obtiene un pedido general por ID.
  *
  * Incluye:
- * - Cliente
- * - Vendedor
- * - Artículos del pedido
- * - Producto relacionado, si existe
+ * - vendedor
+ * - clientes dentro del pedido
+ * - artículos de cada cliente
+ * - productos relacionados
+ *
+ * Beneficio:
+ * - Permite ver el detalle completo del pedido general.
  */
 export async function getOrderByIdService(id: number) {
   const order = await prisma.order.findUnique({
@@ -329,7 +409,6 @@ export async function getOrderByIdService(id: number) {
       id,
     },
     include: {
-      customer: true,
       seller: {
         select: {
           id: true,
@@ -338,9 +417,14 @@ export async function getOrderByIdService(id: number) {
           role: true,
         },
       },
-      items: {
+      customerOrders: {
         include: {
-          product: true,
+          customer: true,
+          items: {
+            include: {
+              product: true,
+            },
+          },
         },
       },
     },
@@ -354,21 +438,15 @@ export async function getOrderByIdService(id: number) {
 }
 
 /**
- * Actualiza datos básicos de un pedido.
+ * Actualiza datos básicos de un pedido general.
  *
  * Permitimos cambiar:
  * - status
  * - deliveryDate
  * - notes
  *
- * Importante:
- * - Ya no ajustamos stock aquí.
- * - En este flujo el pedido funciona más como registro de venta/catálogo.
- *
  * Beneficio:
- * - Evitamos errores porque los productos pueden crearse automáticamente
- *   con stock 0.
- * - El usuario puede registrar pedidos sin manejar inventario todavía.
+ * - Podemos actualizar estado del pedido sin tocar sus artículos.
  */
 export async function updateOrderService(id: number, data: UpdateOrderDto) {
   const currentOrder = await prisma.order.findUnique({
@@ -393,7 +471,6 @@ export async function updateOrderService(id: number, data: UpdateOrderDto) {
       notes: data.notes,
     },
     include: {
-      customer: true,
       seller: {
         select: {
           id: true,
@@ -402,9 +479,14 @@ export async function updateOrderService(id: number, data: UpdateOrderDto) {
           role: true,
         },
       },
-      items: {
+      customerOrders: {
         include: {
-          product: true,
+          customer: true,
+          items: {
+            include: {
+              product: true,
+            },
+          },
         },
       },
     },
@@ -414,10 +496,14 @@ export async function updateOrderService(id: number, data: UpdateOrderDto) {
 }
 
 /**
- * Obtiene todos los pedidos de un cliente.
+ * Obtiene historial de pedidos donde aparece un cliente.
  *
- * Esto sirve para mostrar el historial:
- * "María ha comprado estos pedidos..."
+ * Nueva lógica:
+ * - Un cliente aparece dentro de customerOrders.
+ * - Ya no buscamos por Order.customerId.
+ *
+ * Beneficio:
+ * - Mantiene historial del cliente aunque el pedido general tenga más personas.
  */
 export async function getOrdersByCustomerIdService(customerId: number) {
   const customer = await prisma.customer.findUnique({
@@ -432,10 +518,13 @@ export async function getOrdersByCustomerIdService(customerId: number) {
 
   return prisma.order.findMany({
     where: {
-      customerId,
+      customerOrders: {
+        some: {
+          customerId,
+        },
+      },
     },
     include: {
-      customer: true,
       seller: {
         select: {
           id: true,
@@ -444,9 +533,25 @@ export async function getOrdersByCustomerIdService(customerId: number) {
           role: true,
         },
       },
-      items: {
+
+      /**
+       * En historial por cliente solo regresamos la parte de ese cliente.
+       *
+       * Beneficio:
+       * - Si un pedido general tenía 5 clientes, aquí mostramos solo
+       *   los artículos del cliente consultado.
+       */
+      customerOrders: {
+        where: {
+          customerId,
+        },
         include: {
-          product: true,
+          customer: true,
+          items: {
+            include: {
+              product: true,
+            },
+          },
         },
       },
     },

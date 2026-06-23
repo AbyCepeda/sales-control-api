@@ -51,7 +51,8 @@ enum OrderStatus {
  * Usuario del sistema.
  *
  * Puede ser administrador o vendedor.
- * Un vendedor puede registrar muchos pedidos.
+ *
+ * Un vendedor puede registrar muchos pedidos generales.
  */
 model User {
   id       Int      @id @default(autoincrement())
@@ -60,7 +61,7 @@ model User {
   password String
   role     UserRole @default(SELLER)
 
-  // Relación: un usuario/vendedor puede tener muchos pedidos.
+  // Relación: un usuario/vendedor puede tener muchos pedidos generales.
   orders Order[]
 
   createdAt DateTime @default(now())
@@ -108,8 +109,15 @@ model Customer {
   notes    String?
   isActive Boolean @default(true)
 
-  // Relación: un cliente puede tener muchos pedidos.
-  orders Order[]
+  /**
+   * Relación:
+   * Un cliente puede aparecer en muchos pedidos generales.
+   *
+   * Ejemplo:
+   * - Pedido general #1: María compra perfume.
+   * - Pedido general #2: María compra crema.
+   */
+  customerOrders CustomerOrder[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -118,14 +126,28 @@ model Customer {
 }
 
 /**
- * Pedido principal.
+ * Pedido general.
  *
- * Representa una compra/pedido hecho por un cliente.
- * Un pedido puede tener varios productos dentro de OrderItem.
+ * Representa una captura completa de pedido.
+ *
+ * Nueva lógica:
+ * - Un pedido general puede tener varios clientes.
+ * - Cada cliente dentro del pedido tiene sus propios artículos.
+ *
+ * Ejemplo:
+ * Pedido general #1
+ * - Cliente María
+ *   - Perfume x2
+ * - Cliente Juan
+ *   - Crema x1
+ *
+ * Beneficio:
+ * - Permite capturar pedidos tipo catálogo.
+ * - Mantiene el total completo del pedido.
+ * - Permite separar cuánto debe cada cliente.
  */
 model Order {
   id           Int         @id @default(autoincrement())
-  customerId   Int
   sellerId     Int
   total        Decimal     @db.Decimal(10, 2)
   status       OrderStatus @default(PENDING)
@@ -133,39 +155,98 @@ model Order {
   deliveryDate DateTime?
   notes        String?
 
-  // Cliente que hizo el pedido.
-  customer Customer @relation(fields: [customerId], references: [id])
-
-  // Usuario/vendedor que registró el pedido.
+  // Usuario/vendedor que registró el pedido general.
   seller User @relation(fields: [sellerId], references: [id])
 
-  // Productos incluidos dentro del pedido.
-  items OrderItem[]
+  /**
+   * Clientes incluidos dentro del pedido general.
+   *
+   * Beneficio:
+   * - Un mismo pedido puede contener varios clientes.
+   */
+  customerOrders CustomerOrder[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  @@index([customerId])
   @@index([sellerId])
   @@map("orders")
 }
 
 /**
- * Detalle de pedido.
+ * Pedido de un cliente dentro de un pedido general.
  *
- * Cada registro representa un artículo dentro de un pedido.
+ * Este modelo une:
+ * - Order general
+ * - Customer
  *
- * Además de relacionarse con Product, guarda una copia snapshot
- * de los datos usados al momento de la venta.
+ * Ejemplo:
+ * Pedido general #1
+ * - CustomerOrder de María
+ * - CustomerOrder de Juan
  *
  * Beneficio:
- * - Si el producto cambia después, el pedido conserva el SKU,
- *   nombre, descripción y precio originales.
+ * - Permite saber cuánto pidió cada cliente.
+ * - Permite consultar historial por cliente.
+ * - Permite separar artículos por persona dentro del mismo pedido.
+ */
+model CustomerOrder {
+  id         Int     @id @default(autoincrement())
+  orderId    Int
+  customerId Int
+  total      Decimal @db.Decimal(10, 2)
+  notes      String?
+
+  /**
+   * Pedido general al que pertenece este cliente.
+   *
+   * onDelete: Cascade
+   * Si se borra el pedido general, se borran sus registros internos.
+   */
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  /**
+   * Cliente que hizo esta parte del pedido.
+   */
+  customer Customer @relation(fields: [customerId], references: [id])
+
+  /**
+   * Artículos de este cliente dentro del pedido general.
+   */
+  items OrderItem[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  /**
+   * Evita que el mismo cliente se repita dos veces dentro del mismo pedido general.
+   *
+   * Beneficio:
+   * - Si María aparece en un pedido, sus artículos deben estar juntos.
+   */
+  @@unique([orderId, customerId])
+  @@index([orderId])
+  @@index([customerId])
+  @@map("customer_orders")
+}
+
+/**
+ * Detalle de pedido.
+ *
+ * Cada registro representa un artículo comprado por un cliente
+ * dentro de un pedido general.
+ *
+ * Nueva lógica:
+ * - Ya no apunta directo a Order.
+ * - Ahora apunta a CustomerOrder.
+ *
+ * Beneficio:
+ * - Sabemos exactamente qué artículos pidió cada cliente.
  */
 model OrderItem {
-  id        Int  @id @default(autoincrement())
-  orderId   Int
-  productId Int?
+  id              Int  @id @default(autoincrement())
+  customerOrderId Int
+  productId       Int?
 
   skuSnapshot         String
   nameSnapshot        String
@@ -175,15 +256,23 @@ model OrderItem {
   quantity Int
   subtotal Decimal @db.Decimal(10, 2)
 
-  // Pedido al que pertenece este item.
-  order Order @relation(fields: [orderId], references: [id])
+  /**
+   * Pedido del cliente al que pertenece este artículo.
+   *
+   * onDelete: Cascade
+   * Si se borra el CustomerOrder, se borran sus items.
+   */
+  customerOrder CustomerOrder @relation(fields: [customerOrderId], references: [id], onDelete: Cascade)
 
-  // Producto vendido en este item.
-  // Es opcional porque el pedido debe conservarse aunque el producto
-  // cambie o se desactive después.
-  product Product? @relation(fields: [productId], references: [id])
+  /**
+   * Producto vendido en este item.
+   *
+   * Es opcional porque el pedido debe conservarse aunque el producto
+   * cambie o se desactive después.
+   */
+  product Product? @relation(fields: [productId], references: [id], onDelete: SetNull)
 
-  @@index([orderId])
+  @@index([customerOrderId])
   @@index([productId])
   @@index([skuSnapshot])
   @@map("order_items")
