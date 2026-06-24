@@ -3,14 +3,16 @@ import type { Prisma } from "@prisma/client";
 /**
  * Tipo para pedidos recientes en el dashboard.
  *
- * Incluimos datos útiles:
- * - cliente
- * - vendedor
- * - productos del pedido
+ * Nueva estructura:
+ * - Order es el pedido general.
+ * - customerOrders son los clientes dentro del pedido.
+ * - items son los artículos de cada cliente.
+ *
+ * Beneficio:
+ * - El dashboard puede mostrar pedidos generales con varios clientes.
  */
 export type RecentOrder = Prisma.OrderGetPayload<{
   include: {
-    customer: true;
     seller: {
       select: {
         id: true;
@@ -19,9 +21,14 @@ export type RecentOrder = Prisma.OrderGetPayload<{
         role: true;
       };
     };
-    items: {
+    customerOrders: {
       include: {
-        product: true;
+        customer: true;
+        items: {
+          include: {
+            product: true;
+          };
+        };
       };
     };
   };

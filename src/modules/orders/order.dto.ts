@@ -1,76 +1,81 @@
+import { OrderStatus } from "@prisma/client";
 import { z } from "zod";
 
 /**
- * DTO para cada artículo dentro del pedido de un cliente.
+ * Schema de artículo dentro de un pedido.
  *
- * Nueva lógica:
- * - Ya no mandamos productId.
- * - Mandamos SKU, nombre, descripción, cantidad y precio.
- * - El backend crea o actualiza el producto automáticamente por SKU.
+ * Para qué sirve:
+ * - Valida los productos que el vendedor captura manualmente.
  *
  * Beneficio:
- * - El usuario puede capturar artículos de catálogo directamente.
- * - No necesita registrar productos antes.
+ * - No obligamos a registrar productos antes.
+ * - El backend puede crear/actualizar productos automáticamente por SKU.
  */
 export const createOrderItemSchema = z.object({
   sku: z
-    .string({
-      error: "El SKU debe ser texto",
-    })
+    .string()
     .trim()
     .min(1, "El SKU es obligatorio")
-    .max(80, "El SKU no puede tener más de 80 caracteres")
-    .transform((value) => value.toUpperCase()),
+    .max(100, "El SKU no puede superar 100 caracteres"),
 
   name: z
-    .string({
-      error: "El nombre del artículo debe ser texto",
-    })
+    .string()
     .trim()
-    .min(1, "El nombre del artículo es obligatorio")
-    .max(150, "El nombre no puede tener más de 150 caracteres"),
+    .min(1, "El nombre del producto es obligatorio")
+    .max(150, "El nombre no puede superar 150 caracteres"),
 
   description: z
     .string()
     .trim()
-    .max(500, "La descripción no puede tener más de 500 caracteres")
-    .optional()
-    .nullable(),
+    .max(500, "La descripción no puede superar 500 caracteres")
+    .nullable()
+    .optional(),
 
   quantity: z
     .number({
-      error: "La cantidad debe ser un número",
+      error: "La cantidad debe ser numérica",
     })
     .int("La cantidad debe ser un número entero")
-    .positive("La cantidad debe ser mayor a 0"),
+    .positive("La cantidad debe ser mayor a cero"),
 
   unitPrice: z
     .number({
-      error: "El precio unitario debe ser un número",
+      error: "El precio unitario debe ser numérico",
     })
-    .positive("El precio unitario debe ser mayor a 0"),
+    .positive("El precio unitario debe ser mayor a cero"),
 });
 
 /**
- * DTO para un cliente dentro del pedido general.
+ * Schema de cliente capturado dentro del pedido.
  *
  * Nueva lógica:
- * - Un pedido general puede tener varios clientes.
- * - Cada cliente tiene su propia lista de artículos.
+ * - Ya no pedimos customerId.
+ * - Ahora capturamos nombre, teléfono y notas del cliente.
  *
  * Beneficio:
- * - Podemos separar cuánto pidió cada cliente.
- * - Podemos calcular total por cliente y total general.
+ * - El vendedor puede levantar pedidos rápido sin registrar clientes antes.
+ * - El backend crea el cliente automáticamente.
  */
-export const createCustomerOrderSchema = z.object({
-  customerId: z
-    .number({
-      error: "El customerId debe ser un número",
-    })
-    .int("El customerId debe ser un número entero")
-    .positive("El customerId debe ser mayor a 0"),
+export const createOrderCustomerSchema = z.object({
+  name: z
+    .string()
+    .trim()
+    .min(1, "El nombre del cliente es obligatorio")
+    .max(150, "El nombre del cliente no puede superar 150 caracteres"),
 
-  notes: z.string().trim().optional().nullable(),
+  phone: z
+    .string()
+    .trim()
+    .max(30, "El teléfono no puede superar 30 caracteres")
+    .nullable()
+    .optional(),
+
+  notes: z
+    .string()
+    .trim()
+    .max(500, "Las notas del cliente no pueden superar 500 caracteres")
+    .nullable()
+    .optional(),
 
   items: z
     .array(createOrderItemSchema)
@@ -78,168 +83,119 @@ export const createCustomerOrderSchema = z.object({
 });
 
 /**
- * DTO para crear un pedido general.
+ * Schema para crear un pedido general.
  *
  * Nueva estructura:
- * {
- *   "notes": "Pedido campaña junio",
- *   "customers": [
- *     {
- *       "customerId": 1,
- *       "items": [...]
- *     },
- *     {
- *       "customerId": 2,
- *       "items": [...]
- *     }
- *   ]
- * }
+ * - Order = pedido general.
+ * - customers = clientes capturados dentro del pedido.
+ * - items = artículos de cada cliente.
  *
  * Beneficio:
- * - Un solo pedido puede contener varios clientes.
- * - Cada cliente conserva sus propios artículos.
+ * - Un pedido puede incluir varios clientes.
+ * - Cada cliente puede tener sus propios artículos.
  */
 export const createOrderSchema = z.object({
   deliveryDate: z
     .string()
-    .datetime("La fecha de entrega debe tener formato ISO válido")
-    .optional()
-    .nullable(),
+    .datetime("La fecha de entrega debe tener formato ISO")
+    .nullable()
+    .optional(),
 
-  notes: z.string().trim().optional().nullable(),
+  notes: z
+    .string()
+    .trim()
+    .max(500, "Las notas del pedido no pueden superar 500 caracteres")
+    .nullable()
+    .optional(),
 
   customers: z
-    .array(createCustomerOrderSchema)
+    .array(createOrderCustomerSchema)
     .min(1, "El pedido debe tener al menos un cliente"),
 });
 
 /**
- * Estados permitidos para un pedido.
+ * Schema para actualizar datos básicos de un pedido.
  *
- * Deben coincidir con el enum OrderStatus de Prisma.
- */
-export const orderStatusSchema = z.enum([
-  "PENDING",
-  "PAID",
-  "DELIVERED",
-  "CANCELLED",
-]);
-
-/**
- * DTO para actualizar un pedido general.
- *
- * Por ahora solo permitimos actualizar:
- * - status
- * - deliveryDate
- * - notes
+ * Para qué sirve:
+ * - Permite cambiar estado, fecha de entrega o notas.
  *
  * Beneficio:
- * - Evitamos modificar items accidentalmente.
- * - La edición de artículos la podemos hacer después con una función dedicada.
+ * - Sirve para edición rápida sin tocar clientes/artículos.
  */
 export const updateOrderSchema = z.object({
-  status: orderStatusSchema.optional(),
+  status: z.nativeEnum(OrderStatus).optional(),
 
   deliveryDate: z
     .string()
-    .datetime("La fecha de entrega debe tener formato ISO válido")
-    .optional()
-    .nullable(),
+    .datetime("La fecha de entrega debe tener formato ISO")
+    .nullable()
+    .optional(),
 
-  notes: z.string().trim().optional().nullable(),
+  notes: z
+    .string()
+    .trim()
+    .max(500, "Las notas del pedido no pueden superar 500 caracteres")
+    .nullable()
+    .optional(),
 });
 
 /**
- * DTO para filtrar pedidos desde query params.
+ * Schema para edición completa de pedido.
  *
- * Ejemplos:
- * /api/orders?status=PENDING
- * /api/orders?customerId=1
- * /api/orders?from=2026-06-01&to=2026-06-30
+ * Nueva lógica:
+ * - Edita datos del pedido.
+ * - Reemplaza clientes del pedido.
+ * - Reemplaza artículos del pedido.
+ *
+ * Beneficio:
+ * - Permite agregar clientes nuevos.
+ * - Permite agregar/quitar artículos.
+ * - Permite recalcular totales correctamente.
  */
-export const orderFiltersSchema = z
-  .object({
-    status: orderStatusSchema.optional(),
+export const updateFullOrderSchema = z.object({
+  status: z.nativeEnum(OrderStatus).optional(),
 
-    /**
-     * customerId viene desde la URL como string.
-     *
-     * Nueva lógica:
-     * - Ya no está directo en Order.
-     * - Ahora se filtra a través de customerOrders.
-     */
-    customerId: z
-      .string()
-      .optional()
-      .transform((value) => {
-        if (!value) return undefined;
+  deliveryDate: z
+    .string()
+    .datetime("La fecha de entrega debe tener formato ISO")
+    .nullable()
+    .optional(),
 
-        const customerId = Number(value);
+  notes: z
+    .string()
+    .trim()
+    .max(500, "Las notas del pedido no pueden superar 500 caracteres")
+    .nullable()
+    .optional(),
 
-        if (Number.isNaN(customerId) || customerId <= 0) {
-          throw new Error("customerId inválido");
-        }
+  customers: z
+    .array(createOrderCustomerSchema)
+    .min(1, "El pedido debe tener al menos un cliente"),
+});
 
-        return customerId;
-      }),
+/**
+ * Schema para filtros de pedidos.
+ *
+ * Para qué sirve:
+ * - Valida los query params de GET /api/orders.
+ */
+export const orderFiltersSchema = z.object({
+  status: z.nativeEnum(OrderStatus).optional(),
 
-    /**
-     * from representa fecha inicial.
-     *
-     * Formato esperado:
-     * YYYY-MM-DD
-     */
-    from: z.string().optional(),
+  customerId: z.coerce
+    .number()
+    .int("El ID del cliente debe ser entero")
+    .positive("El ID del cliente debe ser mayor a cero")
+    .optional(),
 
-    /**
-     * to representa fecha final.
-     *
-     * Formato esperado:
-     * YYYY-MM-DD
-     */
-    to: z.string().optional(),
-  })
-  .superRefine((filters, context) => {
-    if (filters.from) {
-      const fromDate = new Date(filters.from);
+  from: z.string().datetime("La fecha inicial debe tener formato ISO").optional(),
 
-      if (Number.isNaN(fromDate.getTime())) {
-        context.addIssue({
-          code: "custom",
-          path: ["from"],
-          message: "La fecha from no es válida",
-        });
-      }
-    }
-
-    if (filters.to) {
-      const toDate = new Date(filters.to);
-
-      if (Number.isNaN(toDate.getTime())) {
-        context.addIssue({
-          code: "custom",
-          path: ["to"],
-          message: "La fecha to no es válida",
-        });
-      }
-    }
-
-    if (filters.from && filters.to) {
-      const fromDate = new Date(filters.from);
-      const toDate = new Date(filters.to);
-
-      if (fromDate > toDate) {
-        context.addIssue({
-          code: "custom",
-          path: ["from"],
-          message: "La fecha from no puede ser mayor que to",
-        });
-      }
-    }
-  });
+  to: z.string().datetime("La fecha final debe tener formato ISO").optional(),
+});
 
 export type CreateOrderDto = z.infer<typeof createOrderSchema>;
-export type CreateCustomerOrderDto = z.infer<typeof createCustomerOrderSchema>;
+export type CreateOrderCustomerDto = z.infer<typeof createOrderCustomerSchema>;
 export type CreateOrderItemDto = z.infer<typeof createOrderItemSchema>;
 export type UpdateOrderDto = z.infer<typeof updateOrderSchema>;
+export type UpdateFullOrderDto = z.infer<typeof updateFullOrderSchema>;
 export type OrderFiltersDto = z.infer<typeof orderFiltersSchema>;

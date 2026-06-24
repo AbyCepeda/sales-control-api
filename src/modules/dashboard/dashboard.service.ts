@@ -8,35 +8,31 @@ import type { DashboardResponse } from "./dashboard.types";
  *
  * Regla actual:
  * - ADMIN ve datos generales.
- * - SELLER por ahora también ve datos generales.
+ * - SELLER ve solo sus propios pedidos.
  *
- * Más adelante podemos cambiarlo para que SELLER solo vea sus pedidos.
+ * Nueva estructura:
+ * - Order representa pedido general.
+ * - CustomerOrder representa clientes dentro del pedido.
+ * - OrderItem representa artículos de cada cliente.
  */
 export async function getDashboardService(
   authUser: AppJwtPayload
 ): Promise<DashboardResponse> {
   /**
-   * En este punto authUser ya viene validado por requireAuth().
+   * Si el usuario es vendedor, solo ve sus propios pedidos.
    *
-   * Lo recibimos porque más adelante podemos usar authUser.role
-   * o authUser.userId para filtrar información por vendedor.
+   * Beneficio:
+   * - Un vendedor no ve ventas capturadas por otro vendedor.
    */
   const orderWhere =
     authUser.role === "SELLER"
       ? {
-          /**
-           * Si quieres que SELLER solo vea sus propios pedidos,
-           * deja esta línea activa.
-           *
-           * Por ahora la mantenemos activa porque es más seguro
-           * y más realista para un vendedor.
-           */
           sellerId: authUser.userId,
         }
       : {};
 
   /**
-   * Contamos todos los pedidos visibles para el usuario.
+   * Contamos todos los pedidos generales visibles para el usuario.
    */
   const totalOrders = await prisma.order.count({
     where: orderWhere,
@@ -83,7 +79,7 @@ export async function getDashboardService(
   });
 
   /**
-   * Sumamos ingresos.
+   * Sumamos ingresos del pedido general.
    *
    * Importante:
    * No sumamos pedidos cancelados porque no representan venta real.
@@ -109,8 +105,7 @@ export async function getDashboardService(
   /**
    * Contamos clientes activos.
    *
-   * Para SELLER también mostramos total general por ahora.
-   * Si después cada vendedor tiene sus propios clientes, se filtra aquí.
+   * Por ahora es conteo general.
    */
   const activeCustomers = await prisma.customer.count({
     where: {
@@ -128,10 +123,16 @@ export async function getDashboardService(
   });
 
   /**
-   * Últimos pedidos registrados.
+   * Últimos pedidos generales registrados.
    *
-   * Limitamos a 5 para dashboard.
-   * No tiene sentido traer 500 pedidos en la pantalla inicial.
+   * Nueva estructura:
+   * - Incluye vendedor.
+   * - Incluye customerOrders.
+   * - Cada customerOrder incluye cliente e items.
+   * - Cada item incluye producto.
+   *
+   * Beneficio:
+   * - El dashboard puede mostrar un pedido agrupado por clientes.
    */
   const recentOrders = await prisma.order.findMany({
     where: orderWhere,
@@ -140,7 +141,6 @@ export async function getDashboardService(
       createdAt: "desc",
     },
     include: {
-      customer: true,
       seller: {
         select: {
           id: true,
@@ -149,9 +149,14 @@ export async function getDashboardService(
           role: true,
         },
       },
-      items: {
+      customerOrders: {
         include: {
-          product: true,
+          customer: true,
+          items: {
+            include: {
+              product: true,
+            },
+          },
         },
       },
     },

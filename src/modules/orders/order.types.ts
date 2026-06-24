@@ -76,4 +76,6 @@ export type OrderWithDetails = Prisma.OrderGetPayload<{
       };
     };
   };
+  
 }>;
+
