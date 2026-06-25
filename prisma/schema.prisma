@@ -257,19 +257,18 @@ model OrderItem {
   subtotal Decimal @db.Decimal(10, 2)
 
   /**
-   * Pedido del cliente al que pertenece este artículo.
+   * Indica si este artículo individual ya fue pagado.
    *
-   * onDelete: Cascade
-   * Si se borra el CustomerOrder, se borran sus items.
+   * Para qué sirve:
+   * - Permite marcar artículos pagados sin marcar todo el pedido como pagado.
+   *
+   * Beneficio:
+   * - Un cliente puede pagar algunos artículos primero y otros después.
    */
+  isPaid Boolean @default(false)
+
   customerOrder CustomerOrder @relation(fields: [customerOrderId], references: [id], onDelete: Cascade)
 
-  /**
-   * Producto vendido en este item.
-   *
-   * Es opcional porque el pedido debe conservarse aunque el producto
-   * cambie o se desactive después.
-   */
   product Product? @relation(fields: [productId], references: [id], onDelete: SetNull)
 
   @@index([customerOrderId])

@@ -43,6 +43,7 @@ export const createOrderItemSchema = z.object({
       error: "El precio unitario debe ser numérico",
     })
     .positive("El precio unitario debe ser mayor a cero"),
+  isPaid: z.boolean().optional().default(false),
 });
 
 /**
@@ -188,7 +189,10 @@ export const orderFiltersSchema = z.object({
     .positive("El ID del cliente debe ser mayor a cero")
     .optional(),
 
-  from: z.string().datetime("La fecha inicial debe tener formato ISO").optional(),
+  from: z
+    .string()
+    .datetime("La fecha inicial debe tener formato ISO")
+    .optional(),
 
   to: z.string().datetime("La fecha final debe tener formato ISO").optional(),
 });

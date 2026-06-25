@@ -40,24 +40,39 @@ function normalizeSku(sku: string) {
 }
 
 /**
- * Agrupa artículos repetidos por SKU dentro del mismo cliente.
+ * Agrupa artículos repetidos por SKU y por estado de pago.
  *
  * Para qué sirve:
- * - Si el vendedor captura dos veces el mismo SKU para el mismo cliente,
- *   lo juntamos en una sola línea.
+ * - Si el vendedor captura dos veces el mismo SKU y ambos tienen el mismo estado
+ *   de pago, los juntamos.
+ *
+ * Importante:
+ * - No juntamos un artículo pagado con uno pendiente aunque tengan el mismo SKU.
  *
  * Beneficio:
- * - Evita artículos duplicados dentro del pedido.
+ * - Conservamos correctamente qué artículos ya fueron pagados.
  */
 function normalizeOrderItems(items: CreateOrderItemDto[]) {
   const itemsMap = new Map<string, CreateOrderItemDto>();
 
   for (const item of items) {
     const normalizedSku = normalizeSku(item.sku);
-    const existingItem = itemsMap.get(normalizedSku);
+    const isPaid = item.isPaid ?? false;
+
+    /**
+     * La llave incluye SKU + estado de pago.
+     *
+     * Ejemplo:
+     * - ABC-true
+     * - ABC-false
+     *
+     * Así evitamos mezclar artículos pagados con pendientes.
+     */
+    const mapKey = `${normalizedSku}-${isPaid}`;
+    const existingItem = itemsMap.get(mapKey);
 
     if (existingItem) {
-      itemsMap.set(normalizedSku, {
+      itemsMap.set(mapKey, {
         ...existingItem,
         quantity: existingItem.quantity + item.quantity,
       });
@@ -65,11 +80,12 @@ function normalizeOrderItems(items: CreateOrderItemDto[]) {
       continue;
     }
 
-    itemsMap.set(normalizedSku, {
+    itemsMap.set(mapKey, {
       ...item,
       sku: normalizedSku,
       name: item.name.trim(),
       description: normalizeOptionalText(item.description),
+      isPaid,
     });
   }
 
@@ -91,7 +107,7 @@ function normalizeOrderItems(items: CreateOrderItemDto[]) {
  */
 async function findOrCreateCustomer(
   tx: Prisma.TransactionClient,
-  customerData: CreateOrderCustomerDto
+  customerData: CreateOrderCustomerDto,
 ) {
   const phone = normalizeOptionalText(customerData.phone);
 
@@ -127,7 +143,7 @@ async function findOrCreateCustomer(
  */
 export async function getOrdersService(
   filters: OrderFiltersDto,
-  authUser: AppJwtPayload
+  authUser: AppJwtPayload,
 ): Promise<OrderWithDetails[]> {
   const where: Prisma.OrderWhereInput = {};
 
@@ -197,7 +213,7 @@ export async function getOrdersService(
  */
 export async function createOrderService(
   data: CreateOrderDto,
-  sellerId: number
+  sellerId: number,
 ): Promise<OrderWithDetails> {
   return prisma.$transaction(async (tx) => {
     let orderTotal = new Prisma.Decimal(0);
@@ -265,6 +281,7 @@ export async function createOrderService(
             unitPriceSnapshot: unitPrice,
             quantity,
             subtotal,
+            isPaid: item.isPaid ?? false,
           },
         });
 
@@ -335,7 +352,9 @@ export async function createOrderService(
  * Beneficio:
  * - La app móvil podrá abrir una pantalla de detalle.
  */
-export async function getOrderByIdService(id: number): Promise<OrderWithDetails> {
+export async function getOrderByIdService(
+  id: number,
+): Promise<OrderWithDetails> {
   const order = await prisma.order.findUnique({
     where: {
       id,
@@ -380,7 +399,7 @@ export async function getOrderByIdService(id: number): Promise<OrderWithDetails>
  */
 export async function updateOrderService(
   id: number,
-  data: UpdateOrderDto
+  data: UpdateOrderDto,
 ): Promise<OrderWithDetails> {
   const existingOrder = await prisma.order.findUnique({
     where: {
@@ -401,7 +420,9 @@ export async function updateOrderService(
 
       ...(data.deliveryDate !== undefined
         ? {
-            deliveryDate: data.deliveryDate ? new Date(data.deliveryDate) : null,
+            deliveryDate: data.deliveryDate
+              ? new Date(data.deliveryDate)
+              : null,
           }
         : {}),
 
@@ -453,7 +474,7 @@ export async function updateOrderService(
  */
 export async function updateFullOrderService(
   id: number,
-  data: UpdateFullOrderDto
+  data: UpdateFullOrderDto,
 ): Promise<OrderWithDetails> {
   return prisma.$transaction(async (tx) => {
     const existingOrder = await tx.order.findUnique({
@@ -532,6 +553,7 @@ export async function updateFullOrderService(
             unitPriceSnapshot: unitPrice,
             quantity,
             subtotal,
+            isPaid: item.isPaid ?? false,
           },
         });
 
@@ -617,7 +639,7 @@ export async function updateFullOrderService(
  * - La relación está en CustomerOrder.
  */
 export async function getOrdersByCustomerIdService(
-  customerId: number
+  customerId: number,
 ): Promise<OrderWithDetails[]> {
   return prisma.order.findMany({
     where: {
