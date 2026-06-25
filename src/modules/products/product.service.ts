@@ -45,11 +45,18 @@ export async function getProductByIdService(id: number) {
 /**
  * Crea un producto nuevo.
  *
- * Este service solo recibe datos ya validados por el DTO.
+ * Para qué sirve:
+ * - Registra productos en catálogo manualmente.
+ * - Ahora también guarda el SKU porque en Prisma es obligatorio.
+ *
+ * Beneficio:
+ * - El producto queda compatible con el flujo nuevo de pedidos,
+ *   donde los artículos se identifican por SKU.
  */
 export async function createProductService(data: CreateProductDto) {
   return prisma.product.create({
     data: {
+      sku: data.sku.trim().toUpperCase(),
       name: data.name,
       description: data.description,
       price: data.price,
@@ -63,11 +70,14 @@ export async function createProductService(data: CreateProductDto) {
  * Actualiza un producto existente.
  *
  * Primero verificamos que exista para devolver un error claro.
+ *
+ * Para qué sirve:
+ * - Permite editar nombre, SKU, precio, stock y estado del producto.
+ *
+ * Beneficio:
+ * - Mantiene sincronizado el catálogo con los pedidos que usan SKU.
  */
-export async function updateProductService(
-  id: number,
-  data: UpdateProductDto
-) {
+export async function updateProductService(id: number, data: UpdateProductDto) {
   await getProductByIdService(id);
 
   return prisma.product.update({
@@ -75,6 +85,7 @@ export async function updateProductService(
       id,
     },
     data: {
+      sku: data.sku?.trim().toUpperCase(),
       name: data.name,
       description: data.description,
       price: data.price,
