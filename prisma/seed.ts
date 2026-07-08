@@ -1,23 +1,46 @@
 import { PrismaClient } from "@prisma/client";
-import { PrismaMariaDb } from "@prisma/adapter-mariadb";
+import { PrismaPg } from "@prisma/adapter-pg";
+import { Pool } from "pg";
 import bcrypt from "bcryptjs";
 
 /**
- * Adapter de MariaDB/MySQL para Prisma 7.
+ * Validamos que exista DATABASE_URL.
  *
- * Debe coincidir con la conexión del backend.
+ * Para qué sirve:
+ * - El seed usará la misma base de datos PostgreSQL que el backend.
  *
  * Beneficio:
- * - Permite ejecutar el seed usando la misma base de datos.
+ * - Funciona tanto local con Neon como en deploy.
  */
-const adapter = new PrismaMariaDb({
-  host: "localhost",
-  port: 3310,
-  user: "root",
-  password: "root",
-  database: "sales_control_db",
-  allowPublicKeyRetrieval: true,
+const databaseUrl = process.env.DATABASE_URL;
+
+if (!databaseUrl) {
+  throw new Error("DATABASE_URL no está configurada.");
+}
+
+/**
+ * Pool de conexión PostgreSQL.
+ *
+ * Para qué sirve:
+ * - Conecta el seed a Neon PostgreSQL usando DATABASE_URL.
+ *
+ * Beneficio:
+ * - Ya no dependemos de MySQL local ni del puerto 3310.
+ */
+const pool = new Pool({
+  connectionString: databaseUrl,
 });
+
+/**
+ * Adapter PostgreSQL para Prisma 7.
+ *
+ * Para qué sirve:
+ * - Prisma 7 necesita adapter para conectarse a la base.
+ *
+ * Beneficio:
+ * - El seed queda alineado con el backend.
+ */
+const adapter = new PrismaPg(pool);
 
 /**
  * Cliente Prisma para insertar datos iniciales.
@@ -35,7 +58,7 @@ const prisma = new PrismaClient({
  * - Cliente de prueba
  *
  * Beneficio:
- * - Después de hacer migrate reset puedes volver a iniciar sesión.
+ * - Después de migrar puedes iniciar sesión.
  * - Puedes probar clientes y pedidos sin capturar todo manualmente.
  */
 async function main() {
@@ -148,4 +171,5 @@ main()
   })
   .finally(async () => {
     await prisma.$disconnect();
+    await pool.end();
   });
