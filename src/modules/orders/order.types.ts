@@ -7,6 +7,7 @@ import type { Prisma } from "@prisma/client";
  * - Order representa el pedido general.
  * - customerOrders representa los clientes dentro del pedido.
  * - items representa los artículos de cada cliente.
+ * - payments representa los pagos/abonos realizados al pedido.
  *
  * Ejemplo:
  * Pedido general #1
@@ -14,11 +15,15 @@ import type { Prisma } from "@prisma/client";
  *   - Perfume x2
  * - Cliente Juan
  *   - Crema x1
+ * - Pagos:
+ *   - $300 efectivo
+ *   - $200 transferencia
  *
  * Beneficio:
  * - Permite manejar un pedido con varios clientes.
  * - Permite ver cuánto pidió cada cliente.
  * - Permite conservar el historial por cliente.
+ * - Permite saber cuánto se ha pagado y cuánto falta.
  */
 export type OrderWithDetails = Prisma.OrderGetPayload<{
   include: {
@@ -75,7 +80,18 @@ export type OrderWithDetails = Prisma.OrderGetPayload<{
         };
       };
     };
-  };
-  
-}>;
 
+    /**
+     * Pagos/abonos registrados para este pedido.
+     *
+     * Beneficio:
+     * - Permite mostrar historial de pagos.
+     * - Permite calcular pagado y pendiente.
+     */
+    payments: {
+      orderBy: {
+        createdAt: "desc";
+      };
+    };
+  };
+}>;

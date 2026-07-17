@@ -1,4 +1,4 @@
-import { OrderStatus } from "@prisma/client";
+import { OrderStatus, PaymentMethod } from "@prisma/client";
 import { z } from "zod";
 
 /**
@@ -43,6 +43,7 @@ export const createOrderItemSchema = z.object({
       error: "El precio unitario debe ser numérico",
     })
     .positive("El precio unitario debe ser mayor a cero"),
+
   isPaid: z.boolean().optional().default(false),
 });
 
@@ -175,6 +176,36 @@ export const updateFullOrderSchema = z.object({
 });
 
 /**
+ * Schema para registrar un pago o abono de un pedido.
+ *
+ * Para qué sirve:
+ * - Permite registrar pagos parciales.
+ * - Permite registrar pagos completos.
+ * - Un pedido puede tener varios pagos.
+ *
+ * Beneficio:
+ * - Podemos calcular cuánto se ha pagado.
+ * - Podemos calcular cuánto queda pendiente.
+ * - Conservamos historial de abonos.
+ */
+export const createOrderPaymentSchema = z.object({
+  amount: z
+    .number({
+      error: "El monto debe ser numérico",
+    })
+    .positive("El monto debe ser mayor a cero"),
+
+  method: z.nativeEnum(PaymentMethod).optional().default(PaymentMethod.CASH),
+
+  notes: z
+    .string()
+    .trim()
+    .max(500, "Las notas del pago no pueden superar 500 caracteres")
+    .nullable()
+    .optional(),
+});
+
+/**
  * Schema para filtros de pedidos.
  *
  * Para qué sirve:
@@ -202,4 +233,5 @@ export type CreateOrderCustomerDto = z.infer<typeof createOrderCustomerSchema>;
 export type CreateOrderItemDto = z.infer<typeof createOrderItemSchema>;
 export type UpdateOrderDto = z.infer<typeof updateOrderSchema>;
 export type UpdateFullOrderDto = z.infer<typeof updateFullOrderSchema>;
+export type CreateOrderPaymentDto = z.infer<typeof createOrderPaymentSchema>;
 export type OrderFiltersDto = z.infer<typeof orderFiltersSchema>;

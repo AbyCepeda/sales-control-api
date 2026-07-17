@@ -5,11 +5,48 @@ import type {
   CreateOrderCustomerDto,
   CreateOrderDto,
   CreateOrderItemDto,
+  CreateOrderPaymentDto,
   OrderFiltersDto,
   UpdateFullOrderDto,
   UpdateOrderDto,
 } from "./order.dto";
 import type { OrderWithDetails } from "./order.types";
+
+/**
+ * Include estándar para regresar pedidos completos.
+ *
+ * Para qué sirve:
+ * - Evita repetir el mismo include en todos los métodos.
+ *
+ * Beneficio:
+ * - Todos los endpoints regresan la misma estructura:
+ *   vendedor, clientes, artículos, productos y pagos.
+ */
+const orderWithDetailsInclude = {
+  seller: {
+    select: {
+      id: true,
+      name: true,
+      email: true,
+      role: true,
+    },
+  },
+  customerOrders: {
+    include: {
+      customer: true,
+      items: {
+        include: {
+          product: true,
+        },
+      },
+    },
+  },
+  payments: {
+    orderBy: {
+      createdAt: "desc",
+    },
+  },
+} satisfies Prisma.OrderInclude;
 
 /**
  * Normaliza un texto opcional.
@@ -37,6 +74,40 @@ function normalizeOptionalText(value?: string | null) {
  */
 function normalizeSku(sku: string) {
   return sku.trim().toUpperCase();
+}
+
+/**
+ * Calcula resumen de pagos de un pedido.
+ *
+ * Para qué sirve:
+ * - Suma todos los pagos registrados.
+ * - Calcula cuánto queda pendiente.
+ *
+ * Beneficio:
+ * - El frontend puede mostrar:
+ *   total, pagado y pendiente.
+ */
+function buildPaymentSummary(
+  orderTotal: Prisma.Decimal,
+  payments: {
+    amount: Prisma.Decimal;
+  }[],
+) {
+  const paidAmount = payments.reduce((total, payment) => {
+    return total.add(payment.amount);
+  }, new Prisma.Decimal(0));
+
+  const pendingAmount = orderTotal.sub(paidAmount);
+
+  return {
+    totalAmount: orderTotal,
+    paidAmount,
+    pendingAmount: pendingAmount.lessThan(0)
+      ? new Prisma.Decimal(0)
+      : pendingAmount,
+    isFullyPaid: paidAmount.greaterThanOrEqualTo(orderTotal),
+    hasPayments: paidAmount.greaterThan(0),
+  };
 }
 
 /**
@@ -179,26 +250,7 @@ export async function getOrdersService(
     orderBy: {
       createdAt: "desc",
     },
-    include: {
-      seller: {
-        select: {
-          id: true,
-          name: true,
-          email: true,
-          role: true,
-        },
-      },
-      customerOrders: {
-        include: {
-          customer: true,
-          items: {
-            include: {
-              product: true,
-            },
-          },
-        },
-      },
-    },
+    include: orderWithDetailsInclude,
   });
 }
 
@@ -313,26 +365,7 @@ export async function createOrderService(
       where: {
         id: order.id,
       },
-      include: {
-        seller: {
-          select: {
-            id: true,
-            name: true,
-            email: true,
-            role: true,
-          },
-        },
-        customerOrders: {
-          include: {
-            customer: true,
-            items: {
-              include: {
-                product: true,
-              },
-            },
-          },
-        },
-      },
+      include: orderWithDetailsInclude,
     });
 
     if (!orderWithDetails) {
@@ -359,26 +392,7 @@ export async function getOrderByIdService(
     where: {
       id,
     },
-    include: {
-      seller: {
-        select: {
-          id: true,
-          name: true,
-          email: true,
-          role: true,
-        },
-      },
-      customerOrders: {
-        include: {
-          customer: true,
-          items: {
-            include: {
-              product: true,
-            },
-          },
-        },
-      },
-    },
+    include: orderWithDetailsInclude,
   });
 
   if (!order) {
@@ -432,26 +446,7 @@ export async function updateOrderService(
           }
         : {}),
     },
-    include: {
-      seller: {
-        select: {
-          id: true,
-          name: true,
-          email: true,
-          role: true,
-        },
-      },
-      customerOrders: {
-        include: {
-          customer: true,
-          items: {
-            include: {
-              product: true,
-            },
-          },
-        },
-      },
-    },
+    include: orderWithDetailsInclude,
   });
 }
 
@@ -601,26 +596,7 @@ export async function updateFullOrderService(
       where: {
         id,
       },
-      include: {
-        seller: {
-          select: {
-            id: true,
-            name: true,
-            email: true,
-            role: true,
-          },
-        },
-        customerOrders: {
-          include: {
-            customer: true,
-            items: {
-              include: {
-                product: true,
-              },
-            },
-          },
-        },
-      },
+      include: orderWithDetailsInclude,
     });
 
     if (!updatedOrder) {
@@ -653,14 +629,7 @@ export async function getOrdersByCustomerIdService(
       createdAt: "desc",
     },
     include: {
-      seller: {
-        select: {
-          id: true,
-          name: true,
-          email: true,
-          role: true,
-        },
-      },
+      ...orderWithDetailsInclude,
       customerOrders: {
         where: {
           customerId,
@@ -676,4 +645,109 @@ export async function getOrdersByCustomerIdService(
       },
     },
   });
+}
+
+/**
+ * Registra un pago o abono para un pedido.
+ *
+ * Para qué sirve:
+ * - Permite guardar pagos parciales o completos.
+ * - Cada pago queda en historial.
+ *
+ * Beneficio:
+ * - Podemos saber cuánto se ha pagado.
+ * - Podemos saber cuánto queda pendiente.
+ * - No perdemos historial de abonos.
+ */
+export async function createOrderPaymentService(
+  orderId: number,
+  data: CreateOrderPaymentDto,
+  authUser: AppJwtPayload,
+): Promise<OrderWithDetails> {
+  return prisma.$transaction(async (tx) => {
+    const existingOrder = await tx.order.findUnique({
+      where: {
+        id: orderId,
+      },
+      include: {
+        payments: true,
+      },
+    });
+
+    if (!existingOrder) {
+      throw new Error("Pedido no encontrado");
+    }
+
+    /**
+     * Seguridad:
+     * - ADMIN puede registrar pagos en cualquier pedido.
+     * - SELLER solo puede registrar pagos en sus propios pedidos.
+     */
+    if (
+      authUser.role === "SELLER" &&
+      existingOrder.sellerId !== authUser.userId
+    ) {
+      throw new Error("No tienes permisos para modificar este pedido");
+    }
+
+    const amount = new Prisma.Decimal(data.amount);
+
+    await tx.orderPayment.create({
+      data: {
+        orderId,
+        amount,
+        method: data.method,
+        notes: normalizeOptionalText(data.notes),
+      },
+    });
+
+    const updatedOrder = await tx.order.findUnique({
+      where: {
+        id: orderId,
+      },
+      include: orderWithDetailsInclude,
+    });
+
+    if (!updatedOrder) {
+      throw new Error("Pedido no encontrado después de registrar pago");
+    }
+
+    return updatedOrder;
+  });
+}
+
+/**
+ * Obtiene resumen de pagos de un pedido.
+ *
+ * Para qué sirve:
+ * - Calcula total del pedido.
+ * - Calcula total pagado.
+ * - Calcula saldo pendiente.
+ *
+ * Beneficio:
+ * - El frontend puede mostrar un resumen claro:
+ *   Total / Pagado / Pendiente.
+ */
+export async function getOrderPaymentSummaryService(
+  orderId: number,
+  authUser: AppJwtPayload,
+) {
+  const order = await prisma.order.findUnique({
+    where: {
+      id: orderId,
+    },
+    include: {
+      payments: true,
+    },
+  });
+
+  if (!order) {
+    throw new Error("Pedido no encontrado");
+  }
+
+  if (authUser.role === "SELLER" && order.sellerId !== authUser.userId) {
+    throw new Error("No tienes permisos para consultar este pedido");
+  }
+
+  return buildPaymentSummary(order.total, order.payments);
 }

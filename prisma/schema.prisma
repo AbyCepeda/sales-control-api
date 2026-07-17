@@ -96,6 +96,7 @@ model Order {
   createdAt      DateTime        @default(now())
   updatedAt      DateTime        @updatedAt
   customerOrders CustomerOrder[]
+  payments       OrderPayment[]
   seller         User            @relation(fields: [sellerId], references: [id])
 
   @@index([sellerId])
@@ -177,6 +178,30 @@ model OrderItem {
 }
 
 /// *
+///  * Pagos/abonos realizados a un pedido.
+///  *
+///  * Para qué sirve:
+///  * - Permite registrar pagos parciales o pagos completos.
+///  * - Un pedido puede tener varios pagos.
+///  *
+///  * Beneficio:
+///  * - Podemos calcular total pagado y saldo pendiente.
+///  * - Conservamos historial de abonos.
+model OrderPayment {
+  id        Int           @id @default(autoincrement())
+  orderId   Int
+  amount    Decimal       @db.Decimal(10, 2)
+  method    PaymentMethod @default(CASH)
+  notes     String?
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+  order     Order         @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId])
+  @@map("order_payments")
+}
+
+/// *
 ///  * Roles del sistema.
 ///  *
 ///  * ADMIN:
@@ -208,4 +233,11 @@ enum OrderStatus {
   PAID
   DELIVERED
   CANCELLED
+}
+
+enum PaymentMethod {
+  CASH
+  TRANSFER
+  CARD
+  OTHER
 }
