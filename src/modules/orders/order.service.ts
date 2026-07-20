@@ -461,26 +461,24 @@ export async function updateOrderService(
  * Edita un pedido completo.
  *
  * Estrategia:
+ * - Guarda primero los CustomerOrder actuales con sus pagos.
  * - Actualiza datos generales del pedido.
  * - Elimina los CustomerOrder actuales del pedido.
- * - Como CustomerOrder tiene onDelete Cascade, también se eliminan:
- *   - OrderItem
- *   - CustomerOrderPayment
  * - Vuelve a crear clientes/artículos con la nueva información.
  * - Recalcula total por cliente.
  * - Recalcula total general.
+ * - Si el cliente ya existía en el pedido, conserva sus abonos.
  *
  * Beneficio:
- * - Permite agregar clientes.
- * - Permite quitar clientes.
- * - Permite agregar/quitar artículos.
- * - Permite cambiar cantidades y precios.
+ * - Permite editar clientes y artículos.
+ * - Evita que los abonos desaparezcan al presionar "Guardar cambios".
  *
- * Nota importante:
- * - Si editas completamente un pedido, los pagos asociados a los CustomerOrder
- *   anteriores también se eliminan por cascade.
- * - Más adelante podemos mejorar esto conservando pagos cuando el cliente siga
- *   existiendo dentro del mismo pedido.
+ * Importante:
+ * - Si eliminas un cliente del pedido, sus abonos ya no se conservan.
+ * - Si el cliente sigue en el pedido, se intenta conservar por:
+ *   1. customerId
+ *   2. teléfono
+ *   3. nombre
  */
 export async function updateFullOrderService(
   id: number,
@@ -498,13 +496,31 @@ export async function updateFullOrderService(
     }
 
     /**
+     * Guardamos los clientes actuales con sus pagos ANTES de borrar.
+     *
+     * Para qué sirve:
+     * - updateFullOrder reconstruye los CustomerOrder.
+     * - Si no guardamos esto antes, los pagos se pierden por cascade.
+     */
+    const existingCustomerOrders = await tx.customerOrder.findMany({
+      where: {
+        orderId: id,
+      },
+      include: {
+        customer: true,
+        payments: true,
+      },
+    });
+
+    /**
      * Eliminamos los clientes del pedido.
      *
      * Importante:
      * - No eliminamos clientes reales de la tabla Customer.
      * - Solo eliminamos la relación CustomerOrder de este pedido.
      * - Los OrderItem se eliminan automáticamente por Cascade.
-     * - Los CustomerOrderPayment también se eliminan por Cascade.
+     * - Los CustomerOrderPayment también se eliminan por Cascade,
+     *   pero ya los guardamos arriba para restaurarlos.
      */
     await tx.customerOrder.deleteMany({
       where: {
@@ -517,6 +533,32 @@ export async function updateFullOrderService(
     for (const customerData of data.customers) {
       const customer = await findOrCreateCustomer(tx, customerData);
       const normalizedItems = normalizeOrderItems(customerData.items);
+
+      /**
+       * Buscamos si este cliente ya existía dentro del pedido.
+       *
+       * Para qué sirve:
+       * - Si ya tenía abonos, los vamos a restaurar.
+       *
+       * Beneficio:
+       * - Guardar cambios ya no borra los pagos de ese cliente.
+       */
+      const normalizedPhone = normalizeOptionalText(customerData.phone);
+      const normalizedName = customerData.name.trim().toLowerCase();
+
+      const previousCustomerOrder =
+        existingCustomerOrders.find((customerOrder) => {
+          return customerOrder.customerId === customer.id;
+        }) ??
+        existingCustomerOrders.find((customerOrder) => {
+          return (
+            normalizedPhone &&
+            customerOrder.customer.phone === normalizedPhone
+          );
+        }) ??
+        existingCustomerOrders.find((customerOrder) => {
+          return customerOrder.customer.name.trim().toLowerCase() === normalizedName;
+        });
 
       let customerTotal = new Prisma.Decimal(0);
 
@@ -579,6 +621,28 @@ export async function updateFullOrderService(
           total: customerTotal,
         },
       });
+
+      /**
+       * Restauramos abonos del cliente anterior.
+       *
+       * Para qué sirve:
+       * - Los pagos estaban ligados al CustomerOrder viejo.
+       * - Como ese CustomerOrder se borró, los volvemos a crear en el nuevo.
+       *
+       * Beneficio:
+       * - El usuario puede editar artículos y guardar cambios
+       *   sin perder los abonos ya registrados.
+       */
+      if (previousCustomerOrder?.payments.length) {
+        await tx.customerOrderPayment.createMany({
+          data: previousCustomerOrder.payments.map((payment) => ({
+            customerOrderId: customerOrder.id,
+            amount: payment.amount,
+            method: payment.method,
+            notes: payment.notes,
+          })),
+        });
+      }
 
       orderTotal = orderTotal.add(customerTotal);
     }
