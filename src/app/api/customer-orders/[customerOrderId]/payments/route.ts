@@ -7,47 +7,48 @@ import {
   validationErrorResponse,
 } from "@/lib/api-response";
 import { createOrderPaymentSchema } from "@/modules/orders/order.dto";
-import { createOrderPaymentService } from "@/modules/orders/order.service";
+import { createCustomerOrderPaymentService } from "@/modules/orders/order.service";
 
-type OrderPaymentRouteContext = {
+type CustomerOrderPaymentRouteContext = {
   params: Promise<{
-    id: string;
+    customerOrderId: string;
   }>;
 };
 
-function parseOrderId(id: string): number {
-  const orderId = Number(id);
+function parseCustomerOrderId(customerOrderId: string): number {
+  const parsedCustomerOrderId = Number(customerOrderId);
 
-  if (Number.isNaN(orderId) || orderId <= 0) {
+  if (Number.isNaN(parsedCustomerOrderId) || parsedCustomerOrderId <= 0) {
     throw new Error("ID inválido");
   }
 
-  return orderId;
+  return parsedCustomerOrderId;
 }
 
 /**
- * POST /api/orders/:id/payments
+ * POST /api/customer-orders/:customerOrderId/payments
  *
- * Registra un pago o abono para un pedido.
+ * Registra un pago o abono para un cliente dentro de un pedido.
  *
  * Para qué sirve:
- * - Permite guardar pagos parciales.
- * - Permite guardar pagos completos.
+ * - Permite guardar pagos parciales de un cliente específico.
+ * - Permite guardar pagos completos de un cliente específico.
  *
  * Beneficio:
- * - El pedido conserva historial de abonos.
- * - La app puede mostrar total, pagado y pendiente.
+ * - Ya no mezclamos pagos de diferentes clientes.
+ * - Podemos saber exactamente quién pagó.
+ * - La app puede mostrar total, pagado y pendiente por cliente.
  */
 export async function POST(
   request: NextRequest,
-  context: OrderPaymentRouteContext,
+  context: CustomerOrderPaymentRouteContext,
 ) {
   try {
     const authUser = requireAuth(request);
     requireRole(authUser, ["ADMIN", "SELLER"]);
 
     const params = await context.params;
-    const orderId = parseOrderId(params.id);
+    const customerOrderId = parseCustomerOrderId(params.customerOrderId);
 
     const body = await request.json();
 
@@ -57,13 +58,16 @@ export async function POST(
       return validationErrorResponse(validation.error);
     }
 
-    const updatedOrder = await createOrderPaymentService(
-      orderId,
+    const updatedOrder = await createCustomerOrderPaymentService(
+      customerOrderId,
       validation.data,
       authUser,
     );
 
-    return successResponse(updatedOrder, "Pago registrado correctamente");
+    return successResponse(
+      updatedOrder,
+      "Pago del cliente registrado correctamente",
+    );
   } catch (error) {
     if (
       error instanceof Error &&
@@ -83,13 +87,13 @@ export async function POST(
 
     if (
       error instanceof Error &&
-      (error.message === "Pedido no encontrado" ||
+      (error.message === "Cliente del pedido no encontrado" ||
         error.message === "ID inválido")
     ) {
       return errorResponse(error.message, 404);
     }
 
-    console.error("CREATE_ORDER_PAYMENT_ERROR:", error);
+    console.error("CREATE_CUSTOMER_ORDER_PAYMENT_ERROR:", error);
 
     return errorResponse("Error interno del servidor", 500);
   }

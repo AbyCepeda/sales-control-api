@@ -7,23 +7,25 @@ import type { Prisma } from "@prisma/client";
  * - Order representa el pedido general.
  * - customerOrders representa los clientes dentro del pedido.
  * - items representa los artículos de cada cliente.
- * - payments representa los pagos/abonos realizados al pedido.
+ * - payments ahora vive dentro de cada CustomerOrder.
  *
  * Ejemplo:
  * Pedido general #1
  * - Cliente María
  *   - Perfume x2
+ *   - Abonos de María
+ *     - $300 efectivo
+ *
  * - Cliente Juan
  *   - Crema x1
- * - Pagos:
- *   - $300 efectivo
- *   - $200 transferencia
+ *   - Abonos de Juan
+ *     - $200 transferencia
  *
  * Beneficio:
  * - Permite manejar un pedido con varios clientes.
  * - Permite ver cuánto pidió cada cliente.
- * - Permite conservar el historial por cliente.
- * - Permite saber cuánto se ha pagado y cuánto falta.
+ * - Permite conservar historial de pagos por cliente.
+ * - Permite saber cuánto ha pagado y cuánto debe cada cliente.
  */
 export type OrderWithDetails = Prisma.OrderGetPayload<{
   include: {
@@ -46,6 +48,7 @@ export type OrderWithDetails = Prisma.OrderGetPayload<{
      * - customer
      * - total del cliente
      * - items del cliente
+     * - payments/abonos del cliente
      */
     customerOrders: {
       include: {
@@ -78,19 +81,19 @@ export type OrderWithDetails = Prisma.OrderGetPayload<{
             product: true;
           };
         };
-      };
-    };
 
-    /**
-     * Pagos/abonos registrados para este pedido.
-     *
-     * Beneficio:
-     * - Permite mostrar historial de pagos.
-     * - Permite calcular pagado y pendiente.
-     */
-    payments: {
-      orderBy: {
-        createdAt: "desc";
+        /**
+         * Pagos/abonos registrados para este cliente dentro del pedido.
+         *
+         * Beneficio:
+         * - Permite mostrar historial de pagos por cliente.
+         * - Permite calcular pagado y pendiente por cliente.
+         */
+        payments: {
+          orderBy: {
+            createdAt: "desc";
+          };
+        };
       };
     };
   };

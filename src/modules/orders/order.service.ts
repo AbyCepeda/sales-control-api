@@ -18,9 +18,13 @@ import type { OrderWithDetails } from "./order.types";
  * Para qué sirve:
  * - Evita repetir el mismo include en todos los métodos.
  *
+ * Nueva lógica:
+ * - Los pagos ya NO viven directo en Order.
+ * - Ahora los pagos viven dentro de cada CustomerOrder.
+ *
  * Beneficio:
- * - Todos los endpoints regresan la misma estructura:
- *   vendedor, clientes, artículos, productos y pagos.
+ * - El frontend puede saber cuánto pagó cada cliente.
+ * - Cada cliente dentro del pedido conserva su propio historial de abonos.
  */
 const orderWithDetailsInclude = {
   seller: {
@@ -31,19 +35,22 @@ const orderWithDetailsInclude = {
       role: true,
     },
   },
+
   customerOrders: {
     include: {
       customer: true,
+
       items: {
         include: {
           product: true,
         },
       },
-    },
-  },
-  payments: {
-    orderBy: {
-      createdAt: "desc",
+
+      payments: {
+        orderBy: {
+          createdAt: "desc",
+        },
+      },
     },
   },
 } satisfies Prisma.OrderInclude;
@@ -77,18 +84,18 @@ function normalizeSku(sku: string) {
 }
 
 /**
- * Calcula resumen de pagos de un pedido.
+ * Calcula resumen de pagos de un cliente dentro de un pedido.
  *
  * Para qué sirve:
- * - Suma todos los pagos registrados.
- * - Calcula cuánto queda pendiente.
+ * - Suma todos los abonos registrados en CustomerOrderPayment.
+ * - Calcula cuánto queda pendiente de ese cliente.
  *
  * Beneficio:
- * - El frontend puede mostrar:
- *   total, pagado y pendiente.
+ * - Ya no calculamos pago por pedido general.
+ * - Ahora sabemos exactamente cuánto pagó cada cliente.
  */
 function buildPaymentSummary(
-  orderTotal: Prisma.Decimal,
+  customerOrderTotal: Prisma.Decimal,
   payments: {
     amount: Prisma.Decimal;
   }[],
@@ -97,15 +104,15 @@ function buildPaymentSummary(
     return total.add(payment.amount);
   }, new Prisma.Decimal(0));
 
-  const pendingAmount = orderTotal.sub(paidAmount);
+  const pendingAmount = customerOrderTotal.sub(paidAmount);
 
   return {
-    totalAmount: orderTotal,
+    totalAmount: customerOrderTotal,
     paidAmount,
     pendingAmount: pendingAmount.lessThan(0)
       ? new Prisma.Decimal(0)
       : pendingAmount,
-    isFullyPaid: paidAmount.greaterThanOrEqualTo(orderTotal),
+    isFullyPaid: paidAmount.greaterThanOrEqualTo(customerOrderTotal),
     hasPayments: paidAmount.greaterThan(0),
   };
 }
@@ -456,7 +463,9 @@ export async function updateOrderService(
  * Estrategia:
  * - Actualiza datos generales del pedido.
  * - Elimina los CustomerOrder actuales del pedido.
- * - Como CustomerOrder tiene onDelete Cascade, también se eliminan sus OrderItem.
+ * - Como CustomerOrder tiene onDelete Cascade, también se eliminan:
+ *   - OrderItem
+ *   - CustomerOrderPayment
  * - Vuelve a crear clientes/artículos con la nueva información.
  * - Recalcula total por cliente.
  * - Recalcula total general.
@@ -466,6 +475,12 @@ export async function updateOrderService(
  * - Permite quitar clientes.
  * - Permite agregar/quitar artículos.
  * - Permite cambiar cantidades y precios.
+ *
+ * Nota importante:
+ * - Si editas completamente un pedido, los pagos asociados a los CustomerOrder
+ *   anteriores también se eliminan por cascade.
+ * - Más adelante podemos mejorar esto conservando pagos cuando el cliente siga
+ *   existiendo dentro del mismo pedido.
  */
 export async function updateFullOrderService(
   id: number,
@@ -489,6 +504,7 @@ export async function updateFullOrderService(
      * - No eliminamos clientes reales de la tabla Customer.
      * - Solo eliminamos la relación CustomerOrder de este pedido.
      * - Los OrderItem se eliminan automáticamente por Cascade.
+     * - Los CustomerOrderPayment también se eliminan por Cascade.
      */
     await tx.customerOrder.deleteMany({
       where: {
@@ -636,9 +652,16 @@ export async function getOrdersByCustomerIdService(
         },
         include: {
           customer: true,
+
           items: {
             include: {
               product: true,
+            },
+          },
+
+          payments: {
+            orderBy: {
+              createdAt: "desc",
             },
           },
         },
@@ -648,53 +671,54 @@ export async function getOrdersByCustomerIdService(
 }
 
 /**
- * Registra un pago o abono para un pedido.
+ * Registra un pago o abono para un cliente dentro de un pedido.
  *
  * Para qué sirve:
- * - Permite guardar pagos parciales o completos.
- * - Cada pago queda en historial.
+ * - Permite guardar pagos parciales o completos de un CustomerOrder.
+ * - Cada pago queda en historial del cliente dentro del pedido.
  *
  * Beneficio:
- * - Podemos saber cuánto se ha pagado.
- * - Podemos saber cuánto queda pendiente.
- * - No perdemos historial de abonos.
+ * - Podemos saber qué cliente pagó.
+ * - Podemos saber cuánto debe cada cliente.
+ * - Ya no mezclamos pagos de diferentes clientes en el mismo pedido.
  */
-export async function createOrderPaymentService(
-  orderId: number,
+export async function createCustomerOrderPaymentService(
+  customerOrderId: number,
   data: CreateOrderPaymentDto,
   authUser: AppJwtPayload,
 ): Promise<OrderWithDetails> {
   return prisma.$transaction(async (tx) => {
-    const existingOrder = await tx.order.findUnique({
+    const existingCustomerOrder = await tx.customerOrder.findUnique({
       where: {
-        id: orderId,
+        id: customerOrderId,
       },
       include: {
+        order: true,
         payments: true,
       },
     });
 
-    if (!existingOrder) {
-      throw new Error("Pedido no encontrado");
+    if (!existingCustomerOrder) {
+      throw new Error("Cliente del pedido no encontrado");
     }
 
     /**
      * Seguridad:
      * - ADMIN puede registrar pagos en cualquier pedido.
-     * - SELLER solo puede registrar pagos en sus propios pedidos.
+     * - SELLER solo puede registrar pagos en pedidos que él creó.
      */
     if (
       authUser.role === "SELLER" &&
-      existingOrder.sellerId !== authUser.userId
+      existingCustomerOrder.order.sellerId !== authUser.userId
     ) {
       throw new Error("No tienes permisos para modificar este pedido");
     }
 
     const amount = new Prisma.Decimal(data.amount);
 
-    await tx.orderPayment.create({
+    await tx.customerOrderPayment.create({
       data: {
-        orderId,
+        customerOrderId,
         amount,
         method: data.method,
         notes: normalizeOptionalText(data.notes),
@@ -703,7 +727,7 @@ export async function createOrderPaymentService(
 
     const updatedOrder = await tx.order.findUnique({
       where: {
-        id: orderId,
+        id: existingCustomerOrder.orderId,
       },
       include: orderWithDetailsInclude,
     });
@@ -717,37 +741,41 @@ export async function createOrderPaymentService(
 }
 
 /**
- * Obtiene resumen de pagos de un pedido.
+ * Obtiene resumen de pagos de un cliente dentro de un pedido.
  *
  * Para qué sirve:
- * - Calcula total del pedido.
- * - Calcula total pagado.
- * - Calcula saldo pendiente.
+ * - Calcula total del cliente.
+ * - Calcula cuánto ha pagado ese cliente.
+ * - Calcula cuánto le queda pendiente a ese cliente.
  *
  * Beneficio:
- * - El frontend puede mostrar un resumen claro:
- *   Total / Pagado / Pendiente.
+ * - La app puede mostrar:
+ *   Total / Pagado / Pendiente por cliente.
  */
-export async function getOrderPaymentSummaryService(
-  orderId: number,
+export async function getCustomerOrderPaymentSummaryService(
+  customerOrderId: number,
   authUser: AppJwtPayload,
 ) {
-  const order = await prisma.order.findUnique({
+  const customerOrder = await prisma.customerOrder.findUnique({
     where: {
-      id: orderId,
+      id: customerOrderId,
     },
     include: {
+      order: true,
       payments: true,
     },
   });
 
-  if (!order) {
-    throw new Error("Pedido no encontrado");
+  if (!customerOrder) {
+    throw new Error("Cliente del pedido no encontrado");
   }
 
-  if (authUser.role === "SELLER" && order.sellerId !== authUser.userId) {
+  if (
+    authUser.role === "SELLER" &&
+    customerOrder.order.sellerId !== authUser.userId
+  ) {
     throw new Error("No tienes permisos para consultar este pedido");
   }
 
-  return buildPaymentSummary(order.total, order.payments);
+  return buildPaymentSummary(customerOrder.total, customerOrder.payments);
 }

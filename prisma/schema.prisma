@@ -96,7 +96,6 @@ model Order {
   createdAt      DateTime        @default(now())
   updatedAt      DateTime        @updatedAt
   customerOrders CustomerOrder[]
-  payments       OrderPayment[]
   seller         User            @relation(fields: [sellerId], references: [id])
 
   @@index([sellerId])
@@ -119,17 +118,19 @@ model Order {
 ///  * - Permite saber cuánto pidió cada cliente.
 ///  * - Permite consultar historial por cliente.
 ///  * - Permite separar artículos por persona dentro del mismo pedido.
+///  * - Ahora también permite guardar abonos por cliente.
 model CustomerOrder {
-  id         Int         @id @default(autoincrement())
+  id         Int                    @id @default(autoincrement())
   orderId    Int
   customerId Int
-  total      Decimal     @db.Decimal(10, 2)
+  total      Decimal                @db.Decimal(10, 2)
   notes      String?
-  createdAt  DateTime    @default(now())
-  updatedAt  DateTime    @updatedAt
-  customer   Customer    @relation(fields: [customerId], references: [id])
-  order      Order       @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  createdAt  DateTime               @default(now())
+  updatedAt  DateTime               @updatedAt
+  customer   Customer               @relation(fields: [customerId], references: [id])
+  order      Order                  @relation(fields: [orderId], references: [id], onDelete: Cascade)
   items      OrderItem[]
+  payments   CustomerOrderPayment[]
 
   @@unique([orderId, customerId])
   @@index([orderId])
@@ -159,15 +160,17 @@ model OrderItem {
   unitPriceSnapshot   Decimal       @db.Decimal(10, 2)
   quantity            Int
   subtotal            Decimal       @db.Decimal(10, 2)
+
   /// *
-  ///    * Indica si este artículo individual ya fue pagado.
-  ///    *
-  ///    * Para qué sirve:
-  ///    * - Permite marcar artículos pagados sin marcar todo el pedido como pagado.
-  ///    *
-  ///    * Beneficio:
-  ///    * - Un cliente puede pagar algunos artículos primero y otros después.
+  ///  * Indica si este artículo individual ya fue pagado.
+  ///  *
+  ///  * Para qué sirve:
+  ///  * - Permite marcar artículos pagados sin marcar todo el pedido como pagado.
+  ///  *
+  ///  * Beneficio:
+  ///  * - Un cliente puede pagar algunos artículos primero y otros después.
   isPaid              Boolean       @default(false)
+
   customerOrder       CustomerOrder @relation(fields: [customerOrderId], references: [id], onDelete: Cascade)
   product             Product?      @relation(fields: [productId], references: [id])
 
@@ -178,27 +181,37 @@ model OrderItem {
 }
 
 /// *
-///  * Pagos/abonos realizados a un pedido.
+///  * Pagos/abonos realizados por un cliente dentro de un pedido.
 ///  *
 ///  * Para qué sirve:
-///  * - Permite registrar pagos parciales o pagos completos.
-///  * - Un pedido puede tener varios pagos.
+///  * - Permite registrar pagos parciales o completos de un cliente específico.
+///  * - Un cliente dentro del pedido puede tener varios abonos.
+///  *
+///  * Ejemplo:
+///  * Pedido #1
+///  * - María debe $500
+///  *   - Abono $200 efectivo
+///  *   - Pendiente $300
+///  * - Juan debe $800
+///  *   - Abono $800 transferencia
+///  *   - Pendiente $0
 ///  *
 ///  * Beneficio:
-///  * - Podemos calcular total pagado y saldo pendiente.
-///  * - Conservamos historial de abonos.
-model OrderPayment {
-  id        Int           @id @default(autoincrement())
-  orderId   Int
-  amount    Decimal       @db.Decimal(10, 2)
-  method    PaymentMethod @default(CASH)
-  notes     String?
-  createdAt DateTime      @default(now())
-  updatedAt DateTime      @updatedAt
-  order     Order         @relation(fields: [orderId], references: [id], onDelete: Cascade)
+///  * - Sabemos exactamente qué cliente pagó.
+///  * - Podemos calcular pagado y pendiente por cliente.
+///  * - Conservamos historial de abonos por cliente dentro del pedido.
+model CustomerOrderPayment {
+  id              Int           @id @default(autoincrement())
+  customerOrderId Int
+  amount          Decimal       @db.Decimal(10, 2)
+  method          PaymentMethod @default(CASH)
+  notes           String?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+  customerOrder   CustomerOrder @relation(fields: [customerOrderId], references: [id], onDelete: Cascade)
 
-  @@index([orderId])
-  @@map("order_payments")
+  @@index([customerOrderId])
+  @@map("customer_order_payments")
 }
 
 /// *
@@ -235,6 +248,20 @@ enum OrderStatus {
   CANCELLED
 }
 
+/// *
+///  * Métodos de pago.
+///  *
+///  * CASH:
+///  * Pago en efectivo.
+///  *
+///  * TRANSFER:
+///  * Pago por transferencia.
+///  *
+///  * CARD:
+///  * Pago con tarjeta.
+///  *
+///  * OTHER:
+///  * Otro método de pago.
 enum PaymentMethod {
   CASH
   TRANSFER
