@@ -780,9 +780,6 @@ export async function createCustomerOrderPaymentService(
 
     const amount = new Prisma.Decimal(data.amount);
 
-    /**
-     * Guardamos el nuevo abono.
-     */
     await tx.customerOrderPayment.create({
       data: {
         customerOrderId,
@@ -791,87 +788,6 @@ export async function createCustomerOrderPaymentService(
         notes: normalizeOptionalText(data.notes),
       },
     });
-
-    /**
-     * Volvemos a consultar el cliente con sus pagos ya actualizados.
-     *
-     * Para qué sirve:
-     * - Necesitamos saber si con este nuevo abono ya se cubrió el total.
-     */
-    const updatedCustomerOrder = await tx.customerOrder.findUnique({
-      where: {
-        id: customerOrderId,
-      },
-      include: {
-        payments: true,
-      },
-    });
-
-    if (!updatedCustomerOrder) {
-      throw new Error("Cliente del pedido no encontrado después de pagar");
-    }
-
-    const customerPaymentSummary = buildPaymentSummary(
-      updatedCustomerOrder.total,
-      updatedCustomerOrder.payments,
-    );
-
-    /**
-     * Si este cliente ya pagó completo, marcamos sus artículos como pagados.
-     *
-     * Beneficio:
-     * - El resumen por artículos ya no queda pendiente después de sincronizar.
-     */
-    if (customerPaymentSummary.isFullyPaid) {
-      await tx.orderItem.updateMany({
-        where: {
-          customerOrderId,
-        },
-        data: {
-          isPaid: true,
-        },
-      });
-    }
-
-    /**
-     * Revisamos todos los clientes del pedido para saber si el pedido completo
-     * ya está pagado.
-     */
-    const allCustomerOrders = await tx.customerOrder.findMany({
-      where: {
-        orderId: existingCustomerOrder.orderId,
-      },
-      include: {
-        payments: true,
-      },
-    });
-
-    const isOrderFullyPaid = allCustomerOrders.every((customerOrder) => {
-      const summary = buildPaymentSummary(
-        customerOrder.total,
-        customerOrder.payments,
-      );
-
-      return summary.isFullyPaid;
-    });
-
-    /**
-     * Si todos los clientes ya pagaron completo, cambiamos el estado general
-     * del pedido a PAID.
-     *
-     * Importante:
-     * - No lo cambiamos a PAID si el pedido está cancelado.
-     */
-    if (isOrderFullyPaid && existingCustomerOrder.order.status !== "CANCELLED") {
-      await tx.order.update({
-        where: {
-          id: existingCustomerOrder.orderId,
-        },
-        data: {
-          status: "PAID",
-        },
-      });
-    }
 
     const updatedOrder = await tx.order.findUnique({
       where: {
@@ -887,6 +803,7 @@ export async function createCustomerOrderPaymentService(
     return updatedOrder;
   });
 }
+
 /**
  * Obtiene resumen de pagos de un cliente dentro de un pedido.
  *
