@@ -647,14 +647,53 @@ export async function updateFullOrderService(
       orderTotal = orderTotal.add(customerTotal);
     }
 
+    /**
+     * Recalculamos el estado real del pedido desde backend.
+     *
+     * Regla:
+     * - Si el pedido está CANCELLED, respetamos CANCELLED.
+     * - Si todos los clientes están completamente pagados, pasa a PAID.
+     * - Si falta pagar algo, pasa a PENDING.
+     *
+     * Beneficio:
+     * - Si agregas un cliente/artículo nuevo a un pedido pagado,
+     *   el backend lo regresa automáticamente a PENDING.
+     * - No dependemos solo del frontend para cuidar esta regla.
+     */
+    const customerOrdersAfterRebuild = await tx.customerOrder.findMany({
+      where: {
+        orderId: id,
+      },
+      include: {
+        payments: true,
+      },
+    });
+
+    const isOrderFullyPaid =
+      customerOrdersAfterRebuild.length > 0 &&
+      customerOrdersAfterRebuild.every((customerOrder) => {
+        const summary = buildPaymentSummary(
+          customerOrder.total,
+          customerOrder.payments,
+        );
+
+        return summary.isFullyPaid;
+      });
+
+    const finalStatus =
+      existingOrder.status === "CANCELLED" || data.status === "CANCELLED"
+        ? "CANCELLED"
+        : isOrderFullyPaid
+          ? "PAID"
+          : "PENDING";
+
     await tx.order.update({
       where: {
         id,
       },
       data: {
         total: orderTotal,
-
-        ...(data.status ? { status: data.status } : {}),
+        status: finalStatus,
 
         ...(data.deliveryDate !== undefined
           ? {
