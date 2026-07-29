@@ -882,3 +882,129 @@ export async function getCustomerOrderPaymentSummaryService(
 
   return buildPaymentSummary(customerOrder.total, customerOrder.payments);
 }
+
+/**
+ * Elimina un abono de un cliente dentro de un pedido.
+ *
+ * Para qué sirve:
+ * - Permite corregir un abono capturado por error.
+ *
+ * Reglas:
+ * - ADMIN puede eliminar cualquier abono.
+ * - SELLER solo puede eliminar abonos de sus propios pedidos.
+ * - No se pueden eliminar abonos de pedidos cancelados.
+ * - Después de eliminar, se recalcula si el cliente/pedido siguen pagados.
+ *
+ * Beneficio:
+ * - Si se elimina un abono, el pedido puede volver a PENDING automáticamente.
+ * - Los artículos del cliente vuelven a pendiente si ya no está cubierto su total.
+ */
+export async function deleteCustomerOrderPaymentService(
+  paymentId: number,
+  authUser: AppJwtPayload,
+): Promise<OrderWithDetails> {
+  return prisma.$transaction(async (tx) => {
+    const existingPayment = await tx.customerOrderPayment.findUnique({
+      where: {
+        id: paymentId,
+      },
+      include: {
+        customerOrder: {
+          include: {
+            order: true,
+            payments: true,
+          },
+        },
+      },
+    });
+
+    if (!existingPayment) {
+      throw new Error("Abono no encontrado");
+    }
+
+    const order = existingPayment.customerOrder.order;
+
+    if (authUser.role === "SELLER" && order.sellerId !== authUser.userId) {
+      throw new Error("No tienes permisos para modificar este pedido");
+    }
+
+    if (order.status === "CANCELLED") {
+      throw new Error("No puedes eliminar abonos de un pedido cancelado");
+    }
+
+    await tx.customerOrderPayment.delete({
+      where: {
+        id: paymentId,
+      },
+    });
+
+    const updatedCustomerOrder = await tx.customerOrder.findUnique({
+      where: {
+        id: existingPayment.customerOrderId,
+      },
+      include: {
+        payments: true,
+      },
+    });
+
+    if (!updatedCustomerOrder) {
+      throw new Error("Cliente del pedido no encontrado después de eliminar abono");
+    }
+
+    const customerPaymentSummary = buildPaymentSummary(
+      updatedCustomerOrder.total,
+      updatedCustomerOrder.payments,
+    );
+
+    await tx.orderItem.updateMany({
+      where: {
+        customerOrderId: updatedCustomerOrder.id,
+      },
+      data: {
+        isPaid: customerPaymentSummary.isFullyPaid,
+      },
+    });
+
+    const allCustomerOrders = await tx.customerOrder.findMany({
+      where: {
+        orderId: order.id,
+      },
+      include: {
+        payments: true,
+      },
+    });
+
+    const isOrderFullyPaid =
+      allCustomerOrders.length > 0 &&
+      allCustomerOrders.every((customerOrder) => {
+        const summary = buildPaymentSummary(
+          customerOrder.total,
+          customerOrder.payments,
+        );
+
+        return summary.isFullyPaid;
+      });
+
+    await tx.order.update({
+      where: {
+        id: order.id,
+      },
+      data: {
+        status: isOrderFullyPaid ? "PAID" : "PENDING",
+      },
+    });
+
+    const updatedOrder = await tx.order.findUnique({
+      where: {
+        id: order.id,
+      },
+      include: orderWithDetailsInclude,
+    });
+
+    if (!updatedOrder) {
+      throw new Error("Pedido no encontrado después de eliminar abono");
+    }
+
+    return updatedOrder;
+  });
+}
