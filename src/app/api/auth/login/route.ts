@@ -51,6 +51,20 @@ export async function POST(request: Request) {
     }
 
     /**
+     * Si el usuario fue desactivado por ADMIN, no puede iniciar sesión.
+     *
+     * Beneficio:
+     * - El historial del usuario se conserva.
+     * - Pero ya no puede entrar al sistema.
+     */
+    if (error instanceof Error && error.message === "Usuario desactivado") {
+      return errorResponse(
+        "No puedes iniciar sesión porque tu usuario está desactivado",
+        403,
+      );
+    }
+
+    /**
      * Cualquier otro error es interno.
      *
      * No mandamos el error real al cliente para no exponer detalles.

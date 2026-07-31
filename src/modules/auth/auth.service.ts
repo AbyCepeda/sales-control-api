@@ -33,6 +33,19 @@ export async function loginService(data: LoginDto): Promise<LoginResponse> {
   }
 
   /**
+   * Si el usuario está desactivado, no debe poder iniciar sesión.
+   *
+   * Para qué sirve:
+   * - Permite que ADMIN desactive vendedores sin borrar historial.
+   *
+   * Beneficio:
+   * - El vendedor ya no puede entrar, pero sus ventas siguen guardadas.
+   */
+  if (!user.isActive) {
+    throw new Error("Usuario desactivado");
+  }
+
+  /**
    * Comparamos la contraseña escrita contra la contraseña hasheada.
    */
   const passwordIsValid = await comparePassword(data.password, user.password);
@@ -82,6 +95,7 @@ export async function getAuthUserById(userId: number): Promise<AuthUser> {
       name: true,
       email: true,
       role: true,
+      isActive: true,
     },
   });
 
@@ -93,5 +107,22 @@ export async function getAuthUserById(userId: number): Promise<AuthUser> {
     throw new Error("Usuario no encontrado");
   }
 
-  return user;
+  /**
+   * Esto bloquea sesiones viejas.
+   *
+   * Ejemplo:
+   * - Un vendedor inicia sesión.
+   * - Luego ADMIN lo desactiva.
+   * - Aunque el vendedor tenga token guardado, /me ya no lo dejará pasar.
+   */
+  if (!user.isActive) {
+    throw new Error("Usuario desactivado");
+  }
+
+  return {
+    id: user.id,
+    name: user.name,
+    email: user.email,
+    role: user.role,
+  };
 }
