@@ -21,7 +21,7 @@ export async function GET(request: Request) {
      * Buscamos al usuario real en base de datos.
      *
      * No confiamos únicamente en el token porque el usuario pudo
-     * haber sido eliminado o modificado después de iniciar sesión.
+     * haber sido eliminado, desactivado o modificado después de iniciar sesión.
      */
     const user = await getAuthUserById(authPayload.userId);
 
@@ -37,6 +37,17 @@ export async function GET(request: Request) {
         error.message === "Usuario no encontrado")
     ) {
       return errorResponse(error.message, 401);
+    }
+
+    /**
+     * Si el usuario fue desactivado por ADMIN, su token viejo
+     * ya no debe seguir funcionando.
+     */
+    if (error instanceof Error && error.message === "Usuario desactivado") {
+      return errorResponse(
+        "Tu usuario está desactivado. Contacta al administrador.",
+        403,
+      );
     }
 
     /**
