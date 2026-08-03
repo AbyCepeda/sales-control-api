@@ -104,7 +104,8 @@ export async function PUT(
      */
     const updatedOrder = await updateFullOrderService(
       orderId,
-      validation.data
+      validation.data,
+      authUser,
     );
 
     return successResponse(updatedOrder, "Pedido editado correctamente");
@@ -132,7 +133,8 @@ export async function PUT(
      */
     if (
       error instanceof Error &&
-      error.message === "No tienes permisos para realizar esta acción"
+      (error.message === "No tienes permisos para realizar esta acción" ||
+        error.message === "No tienes permisos para modificar este pedido")
     ) {
       return errorResponse(error.message, 403);
     }

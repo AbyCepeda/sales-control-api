@@ -394,6 +394,7 @@ export async function createOrderService(
  */
 export async function getOrderByIdService(
   id: number,
+  authUser: AppJwtPayload,
 ): Promise<OrderWithDetails> {
   const order = await prisma.order.findUnique({
     where: {
@@ -404,6 +405,10 @@ export async function getOrderByIdService(
 
   if (!order) {
     throw new Error("Pedido no encontrado");
+  }
+
+  if (authUser.role === "SELLER" && order.sellerId !== authUser.userId) {
+    throw new Error("No tienes permisos para consultar este pedido");
   }
 
   return order;
@@ -421,6 +426,7 @@ export async function getOrderByIdService(
 export async function updateOrderService(
   id: number,
   data: UpdateOrderDto,
+  authUser: AppJwtPayload,
 ): Promise<OrderWithDetails> {
   const existingOrder = await prisma.order.findUnique({
     where: {
@@ -430,6 +436,10 @@ export async function updateOrderService(
 
   if (!existingOrder) {
     throw new Error("Pedido no encontrado");
+  }
+
+  if (authUser.role === "SELLER" && existingOrder.sellerId !== authUser.userId) {
+    throw new Error("No tienes permisos para modificar este pedido");
   }
 
   return prisma.order.update({
@@ -483,6 +493,7 @@ export async function updateOrderService(
 export async function updateFullOrderService(
   id: number,
   data: UpdateFullOrderDto,
+  authUser: AppJwtPayload,
 ): Promise<OrderWithDetails> {
   return prisma.$transaction(async (tx) => {
     const existingOrder = await tx.order.findUnique({
@@ -493,6 +504,10 @@ export async function updateFullOrderService(
 
     if (!existingOrder) {
       throw new Error("Pedido no encontrado");
+    }
+
+    if (authUser.role === "SELLER" && existingOrder.sellerId !== authUser.userId) {
+      throw new Error("No tienes permisos para modificar este pedido");
     }
 
     /**

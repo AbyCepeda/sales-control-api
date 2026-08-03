@@ -62,7 +62,7 @@ export async function GET(request: NextRequest, context: OrderRouteContext) {
     const params = await context.params;
     const orderId = parseOrderId(params.id);
 
-    const order = await getOrderByIdService(orderId);
+    const order = await getOrderByIdService(orderId, authUser);
 
     return successResponse(order, "Pedido obtenido correctamente");
   } catch (error) {
@@ -76,7 +76,9 @@ export async function GET(request: NextRequest, context: OrderRouteContext) {
 
     if (
       error instanceof Error &&
-      error.message === "No tienes permisos para realizar esta acción"
+      (error.message === "No tienes permisos para realizar esta acción" ||
+        error.message === "No tienes permisos para consultar este pedido" ||
+        error.message === "No tienes permisos para modificar este pedido")
     ) {
       return errorResponse(error.message, 403);
     }
@@ -124,7 +126,11 @@ export async function PUT(request: NextRequest, context: OrderRouteContext) {
       return validationErrorResponse(validation.error);
     }
 
-    const updatedOrder = await updateOrderService(orderId, validation.data);
+    const updatedOrder = await updateOrderService(
+      orderId,
+      validation.data,
+      authUser,
+    );
 
     return successResponse(updatedOrder, "Pedido actualizado correctamente");
   } catch (error) {
@@ -138,7 +144,9 @@ export async function PUT(request: NextRequest, context: OrderRouteContext) {
 
     if (
       error instanceof Error &&
-      error.message === "No tienes permisos para realizar esta acción"
+      (error.message === "No tienes permisos para realizar esta acción" ||
+        error.message === "No tienes permisos para consultar este pedido" ||
+        error.message === "No tienes permisos para modificar este pedido")
     ) {
       return errorResponse(error.message, 403);
     }
