@@ -1,76 +1,110 @@
+import { NextRequest, NextResponse } from "next/server";
 import { loginSchema } from "@/modules/auth/auth.dto";
 import { loginService } from "@/modules/auth/auth.service";
-import {
-  errorResponse,
-  successResponse,
-  validationErrorResponse,
-} from "@/lib/api-response";
 
-/**
- * POST /api/auth/login
- *
- * Este endpoint recibe email y password.
- * Si las credenciales son correctas, devuelve token y usuario.
- */
-export async function POST(request: Request) {
+const allowedOrigins = [
+  "http://localhost:5173",
+  "http://localhost:8081",
+  "http://localhost:19006",
+];
+
+function getCorsOrigin(request: NextRequest) {
+  const origin = request.headers.get("origin");
+
+  if (origin && allowedOrigins.includes(origin)) {
+    return origin;
+  }
+
+  return "http://localhost:5173";
+}
+
+function getCorsHeaders(request: NextRequest) {
+  return {
+    "Access-Control-Allow-Origin": getCorsOrigin(request),
+    "Access-Control-Allow-Methods": "POST, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization",
+  };
+}
+
+function jsonResponse(
+  request: NextRequest,
+  body: unknown,
+  status: number = 200,
+) {
+  return NextResponse.json(body, {
+    status,
+    headers: getCorsHeaders(request),
+  });
+}
+
+export async function OPTIONS(request: NextRequest) {
+  return new Response(null, {
+    status: 204,
+    headers: getCorsHeaders(request),
+  });
+}
+
+export async function POST(request: NextRequest) {
   try {
-    /**
-     * Leemos el body de la petición.
-     *
-     * Si el cliente manda JSON mal formado, esto puede lanzar error.
-     */
     const body = await request.json();
 
-    /**
-     * Validamos el body con Zod.
-     *
-     * safeParse no lanza error.
-     * Nos devuelve success true/false.
-     */
-    const result = loginSchema.safeParse(body);
+    const validation = loginSchema.safeParse(body);
 
-    if (!result.success) {
-      return validationErrorResponse(result.error.flatten());
+    if (!validation.success) {
+      return jsonResponse(
+        request,
+        {
+          success: false,
+          message: "Error de validación",
+          errors: validation.error.flatten(),
+        },
+        422,
+      );
     }
 
-    /**
-     * Mandamos los datos ya validados al service.
-     *
-     * El route no debe hacer la lógica del login.
-     * Solo coordina entrada y salida.
-     */
-    const loginData = await loginService(result.data);
+    const loginResponse = await loginService(validation.data);
 
-    return successResponse(loginData, "Login exitoso");
+    return jsonResponse(
+      request,
+      {
+        success: true,
+        message: "Inicio de sesión correcto",
+        data: loginResponse,
+      },
+      200,
+    );
   } catch (error) {
-    /**
-     * Si el service lanza error de credenciales, respondemos 401.
-     */
     if (error instanceof Error && error.message === "Credenciales inválidas") {
-      return errorResponse(error.message, 401);
+      return jsonResponse(
+        request,
+        {
+          success: false,
+          message: error.message,
+        },
+        401,
+      );
     }
 
-    /**
-     * Si el usuario fue desactivado por ADMIN, no puede iniciar sesión.
-     *
-     * Beneficio:
-     * - El historial del usuario se conserva.
-     * - Pero ya no puede entrar al sistema.
-     */
     if (error instanceof Error && error.message === "Usuario desactivado") {
-      return errorResponse(
-        "No puedes iniciar sesión porque tu usuario está desactivado",
+      return jsonResponse(
+        request,
+        {
+          success: false,
+          message: "No puedes iniciar sesión porque tu usuario está desactivado",
+        },
         403,
       );
     }
 
-    /**
-     * Cualquier otro error es interno.
-     *
-     * No mandamos el error real al cliente para no exponer detalles.
-     */
     console.error("LOGIN_ERROR:", error);
 
-    return errorResponse("Error interno del servidor", 500);
+    return jsonResponse(
+      request,
+      {
+        success: false,
+        message: "Error interno del servidor",
+      },
+      500,
+    );
   }
 }
