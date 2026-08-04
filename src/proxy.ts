@@ -3,44 +3,53 @@ import { NextRequest, NextResponse } from "next/server";
 /**
  * Orígenes permitidos para consumir la API.
  *
- * En desarrollo necesitamos permitir:
- * - Expo Web en localhost:8081
- * - Expo Web en 127.0.0.1:8081
- * - Tu IP local para pruebas en red local
+ * Desarrollo:
+ * - Web Vite: localhost:5173
+ * - Expo Web: localhost:8081
+ * - Expo Web alternativo: 127.0.0.1:8081
+ * - IP local para pruebas en red
+ *
+ * Producción:
+ * - Aquí agregaremos después la URL de la web en Vercel.
  */
 const allowedOrigins = [
+  "http://localhost:5173",
+  "http://127.0.0.1:5173",
+
   "http://localhost:8081",
   "http://127.0.0.1:8081",
   "http://192.168.100.198:8081",
+
+  "http://localhost:19006",
+  "http://127.0.0.1:19006",
 ];
+
+function getCorsOrigin(request: NextRequest) {
+  const origin = request.headers.get("origin");
+
+  if (origin && allowedOrigins.includes(origin)) {
+    return origin;
+  }
+
+  return allowedOrigins[0];
+}
 
 /**
  * Proxy global para rutas /api.
  *
- * En Next 16, proxy.ts reemplaza el antiguo middleware.ts.
- *
- * Beneficio:
- * - Permite que el frontend Expo consuma el backend.
+ * Para qué sirve:
+ * - Permite que web y Expo consuman el backend.
  * - Responde correctamente a preflight OPTIONS.
  * - Evita repetir headers CORS en cada route.ts.
  */
 export function proxy(request: NextRequest) {
-  const origin = request.headers.get("origin");
-
-  const isAllowedOrigin = origin && allowedOrigins.includes(origin);
-
   const corsHeaders = {
-    "Access-Control-Allow-Origin": isAllowedOrigin ? origin : allowedOrigins[0],
+    "Access-Control-Allow-Origin": getCorsOrigin(request),
     "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type, Authorization",
     "Access-Control-Allow-Credentials": "true",
   };
 
-  /**
-   * El navegador manda OPTIONS antes de ciertos requests.
-   *
-   * Si no respondemos esto, el POST real nunca llega al backend.
-   */
   if (request.method === "OPTIONS") {
     return new NextResponse(null, {
       status: 204,
