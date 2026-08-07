@@ -111,3 +111,13 @@ export const updateProductSchema = createProductSchema.partial();
  */
 export type CreateProductDto = z.infer<typeof createProductSchema>;
 export type UpdateProductDto = z.infer<typeof updateProductSchema>;
+
+export const updateProductStatusSchema = z.object({
+  isActive: z.boolean({
+    message: "El estado activo/inactivo es obligatorio",
+  }),
+});
+
+export type UpdateProductStatusDto = z.infer<
+  typeof updateProductStatusSchema
+>;

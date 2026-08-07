@@ -113,3 +113,23 @@ export async function deactivateProductService(id: number) {
     },
   });
 }
+
+export async function updateProductStatusService(
+  id: number,
+  isActive: boolean,
+) {
+  const product = await prisma.product.findUnique({
+    where: { id },
+  });
+
+  if (!product) {
+    throw new Error("Producto no encontrado");
+  }
+
+  return prisma.product.update({
+    where: { id },
+    data: {
+      isActive,
+    },
+  });
+}
